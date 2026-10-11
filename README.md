@@ -55,7 +55,7 @@ transitions all play at your display's refresh rate.
 <p align="center">
   <img src="docs/media/compare_60fps_slowmo.gif" alt="30 fps vs 60 fps (slow motion)" width="100%"><br>
   <sub>Shown in slow motion (×0.5) so the difference is visible on any screen.
-  <a href="docs/media/compare_60fps.mp4">Real-time 60 fps video</a>.</sub>
+  <a href="https://github.com/user-attachments/assets/cd45b188-6449-4ee5-8da7-b818399a5756">Real-time 60 fps video</a>.</sub>
 </p>
 
 ### Real high resolution
