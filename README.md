@@ -1,0 +1,374 @@
+<p align="center">
+  <img src="docs/media/banner.png" alt="The Binding of Isaac — Native Recomp" width="100%">
+</p>
+
+<p align="center">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-64--bit-8c1610?style=for-the-badge">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-64--bit-8c1610?style=for-the-badge">
+  <img alt="Nintendo Switch homebrew" src="https://img.shields.io/badge/Switch-homebrew-8c1610?style=for-the-badge">
+  <img alt="60 fps" src="https://img.shields.io/badge/60_fps-1080p-28180f?style=for-the-badge">
+  <img alt="Requires the original game" src="https://img.shields.io/badge/requires-the_Steam_game-e8dcc8?style=for-the-badge&labelColor=28180f">
+</p>
+
+<p align="center">
+  <b>The Binding of Isaac (Flash), rebuilt as a native program.</b><br>
+  No Flash Player, no emulator: the same game you know, at 60 fps and in high resolution.
+</p>
+
+> [!IMPORTANT]
+> **This recomp was made by Lurkered with the help of Artificial Intelligence.**
+> It is a free, non-profit fan project with no affiliation to Edmund McMillen, Florian Himsl, Nicalis, Valve or Nintendo.
+>
+> **The game is not included.** To play, you need your own original copy from Steam:
+> **[The Binding of Isaac](https://store.steampowered.com/app/113200/The_Binding_of_Isaac/)** and, for the expansion,
+> **[Wrath of the Lamb](https://store.steampowered.com/app/113204/The_Binding_of_Isaac_Wrath_of_the_Lamb/)**.
+
+---
+
+## 😢 What is this?
+
+*The Binding of Isaac* came out in 2011 as a Flash game. Flash is gone, and the Steam version still relies on an
+old player that runs at 30 fps, in a small window, with the performance limits of its time.
+
+This project **translates all of the game's original code into C++** and runs it on a modern, native engine
+written from scratch. Graphics, sounds and music are **read from your own Steam `Isaac.exe`** at startup, so you
+need the original game. What changes is *how* it runs:
+
+|                       | Original Flash                   | Recomp                                              |
+|-----------------------|----------------------------------|-----------------------------------------------------|
+| Frame rate            | 30 fps                           | **60 fps** (or whatever your display does: 120, 144…) |
+| Resolution            | 800×600, upscaled                | **Native** (1080p, 1440p, 4K…)                      |
+| Game logic            | 30 Hz                            | Exactly 30 Hz: same speed, physics and patterns     |
+| Performance           | Can stutter with many enemies    | Smooth, with drawing spread across CPU cores        |
+| Controllers           | Needed JoyToKey                  | **Supported out of the box** (XInput / SDL)         |
+| Versions              | One per install                  | **Original, Wrath of the Lamb and Eternal Edition** in one program |
+| Platforms             | Windows / Mac                    | **Windows, Linux and Nintendo Switch (homebrew)**   |
+
+## 🕹️ Comparisons
+
+### 30 fps → 60 fps
+
+The logic still runs at 30 ticks per second, just like the original, so the game feels exactly the same. Every
+in-between frame is drawn by interpolating between the last two ticks: movement, animations, fades and room
+transitions all play at your display's refresh rate.
+
+<p align="center">
+  <img src="docs/media/compare_60fps_slowmo.gif" alt="30 fps vs 60 fps (slow motion)" width="100%"><br>
+  <sub>Shown in slow motion (×0.5) so the difference is visible on any screen.
+  <a href="docs/media/compare_60fps.mp4">Real-time 60 fps video</a>.</sub>
+</p>
+
+### Real high resolution
+
+Vector art is rasterized at your screen's actual resolution, and the layers the game used to paint at 640×480
+(floor, blood, shadows, minimap) are generated at 1440×1080.
+
+<p align="center">
+  <img src="docs/media/sharpness.png" alt="Original window upscaled vs native 1080p" width="100%">
+</p>
+
+### All three Steam versions
+
+If you have more than one version of the game, the program recognizes each one by its content and lets you pick
+at startup. Each version keeps its own save file.
+
+<p align="center">
+  <img src="docs/media/versions.png" alt="Original, Wrath of the Lamb and Eternal Edition" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/media/selector.png" alt="Version selection screen" width="60%">
+</p>
+
+## ✨ What's new compared to the original
+
+- **60 fps or more**, with the game logic untouched at 30 Hz.
+- **Native 1080p / 4K**, with no thin white seams between colored areas (shapes are rasterized the way Flash does it).
+- **No pop-in**: graphics are prepared in the background while the opening cutscene plays.
+- **Smooth room transitions**, with no sudden jumps after a hiccup.
+- **Controller support** without external tools.
+- **Cleaned-up options menu**: options that depended on Flash and no longer do anything are gone.
+- **Fullscreen or windowed** (F11 or Alt+Enter), fitted to your desktop's usable area.
+- **Built-in performance overlay** (F3).
+- **Original, Wrath of the Lamb and Eternal Edition** in a single program.
+- **Nintendo Switch homebrew port** with touch screen support in menus.
+
+## 📦 Installation (PC)
+
+### 1. Get the original game
+
+Buy **[The Binding of Isaac on Steam](https://store.steampowered.com/app/113200/The_Binding_of_Isaac/)** (and
+**[Wrath of the Lamb](https://store.steampowered.com/app/113204/The_Binding_of_Isaac_Wrath_of_the_Lamb/)** if you
+want the expansion). Install it and open its folder: in Steam, *right-click the game → Manage → Browse local files*.
+
+There are two executables in there:
+
+| File                   | What it is                                                                       |
+|------------------------|----------------------------------------------------------------------------------|
+| `Isaac.exe`            | **The game itself**: it contains all of its graphics, sounds and code. This is the one you need. |
+| `Binding_of_Isaac.exe` | Just the Steam launcher. Not useful here.                                        |
+
+### 2. Download the recomp
+
+Go to **[Releases](../../releases)** and grab the package for your system:
+
+- **Windows (64-bit):** `IsaacRecomp_Win64.zip`
+- **Linux (64-bit):** `IsaacRecomp_Linux64.tar.gz`
+
+### 3. Put them together and play
+
+1. Extract the recomp anywhere you like.
+2. Copy `Isaac.exe` from Steam **next to** `IsaacRecomp.exe` (on Linux, next to `isaac`).
+3. Run `IsaacRecomp.exe` (on Linux: `./isaac`).
+
+> [!TIP]
+> **Several versions at once?** On Steam they are all called `Isaac.exe`. Copy them with different names, for
+> example `Isaac-Original.exe`, `Isaac-WotL.exe` and `Isaac-Eternal.exe`. The name doesn't matter: each version is
+> recognized by its content, and the program asks which one to open.
+
+**Requirements:** 64-bit Windows or Linux, and a graphics card that supports OpenGL 3.3.
+
+## 🎮 Nintendo Switch (homebrew)
+
+The same native recomp, built as a homebrew application (`.nro`). It contains no code or assets from Nintendo or
+from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
+
+**You need:**
+
+- A Switch that can run homebrew, with the Homebrew Menu.
+- Your `Isaac.exe` from your Steam copy of the game (see step 1 of the PC installation).
+
+**Installation:**
+
+1. Download `IsaacRecomp_Switch.zip` from **[Releases](../../releases)** and copy its `switch` folder to the
+   root of your SD card. You should end up with `sd:/switch/isaac/isaac.nro`.
+2. Copy `Isaac.exe` into that same folder: `sd:/switch/isaac/Isaac.exe`. For several versions, use different
+   names (for example `Isaac-Original.exe`, `Isaac-WotL.exe`, `Isaac-Eternal.exe`).
+3. Open the Homebrew Menu in **application mode**: hold **R** while launching any installed game. Then pick
+   *The Binding of Isaac*.
+
+> [!WARNING]
+> Don't launch it from the Album (applet mode). That mode only gives homebrew about 400 MB of memory, which isn't
+> enough. Application mode has more than 3 GB.
+
+**Performance:** 720p in handheld mode and 1080p when docked, at 60 fps with interpolation. The game logic runs
+on its own CPU core, and new graphics are prepared in the background on another core.
+
+**Switch controls:**
+
+| Action                   | Button                                    |
+|--------------------------|-------------------------------------------|
+| Move                     | Left stick / D-pad                        |
+| Shoot                    | Right stick, or A / B / X / Y (→ ↓ ↑ ←)   |
+| Bomb                     | L                                         |
+| Active item              | ZL                                        |
+| Card / pill              | R                                         |
+| Restart the current run  | Hold ZR for 5 seconds                     |
+| Pause                    | + or −                                    |
+| Menus                    | Stick / D-pad, A to accept, B to go back, or **touch the screen** |
+| Performance overlay      | L3 + R3                                   |
+
+## 🎮 PC controls
+
+The original controls, plus controller support:
+
+| Action               | Keyboard              | Controller                    |
+|----------------------|-----------------------|-------------------------------|
+| Move                 | `W` `A` `S` `D`       | Left stick / D-pad            |
+| Shoot                | Arrow keys            | Right stick / A B X Y         |
+| Bomb                 | `E` / `Shift`         | LB / left trigger             |
+| Active item          | `Space`               | RB / right trigger            |
+| Card / pill          | `Q`                   | Right stick click             |
+| Pause                | `P` / `Esc`           | Left stick click              |
+| Fullscreen           | `F11` / `Alt+Enter`   | —                             |
+| Screenshot           | `F12`                 | —                             |
+| Performance overlay  | `F3`                  | —                             |
+
+## ⚙️ Configuration
+
+`isaac.ini` is created next to the program on first launch (on Switch: `sd:/switch/isaac/isaac.ini`).
+
+| Option        | Default  | What it does                                                    |
+|---------------|----------|-----------------------------------------------------------------|
+| `swf`         | (empty)  | Path to `Isaac.exe`, if it isn't next to the program            |
+| `juego`       | (empty)  | Last chosen version: `og`, `wotl` or `eternal`                  |
+| `fullscreen`  | `1`      | Borderless fullscreen                                           |
+| `vsync`       | `1`      | Vertical sync                                                   |
+| `smooth`      | `1`      | Interpolation to the display refresh rate (`0` = original 30 fps) |
+| `filters`     | `1`      | Blur effects in cutscenes                                       |
+| `volume`      | `100`    | Master volume (0-100)                                           |
+| `low_latency` | `1`      | Switch: keep at most one frame queued on the GPU (less input lag) |
+
+**Save files:**
+
+| Platform | Folder                                        |
+|----------|-----------------------------------------------|
+| Windows  | `%APPDATA%\IsaacRecomp\WrathOfTheLamb\`       |
+| Linux    | `~/.local/share/IsaacRecomp/WrathOfTheLamb/`  |
+| Switch   | `sd:/switch/isaac/`                           |
+
+There is one save file per version, and the format is the same everywhere, so you can copy saves between PC and Switch.
+
+## ❓ FAQ
+
+<details>
+<summary><b>Do I need Flash installed?</b></summary>
+
+No. The recomp doesn't use Flash Player, Ruffle or any emulator. The game's code has been translated to C++ and
+runs as a native program.
+</details>
+
+<details>
+<summary><b>Can I use my saves from the Steam version?</b></summary>
+
+No. Flash stores unlocks in a different format and location, so the recomp starts from scratch.
+</details>
+
+<details>
+<summary><b>Does it change the difficulty or game speed?</b></summary>
+
+No. The logic runs at exactly 30 ticks per second, just like the original: same physics, same fire rates and
+same enemy patterns. The 60 fps are purely visual.
+</details>
+
+<details>
+<summary><b>It stutters or runs slowly on my machine. What can I do?</b></summary>
+
+Press `F3` in game (L3 + R3 on Switch). The performance overlay appears and a `rendimiento.txt` file is written
+to the save folder. Open an issue and attach that file: it shows exactly which part is taking the time.
+</details>
+
+<details>
+<summary><b>What about Rebirth / Afterbirth / Repentance?</b></summary>
+
+No. Those are a different game, rewritten from scratch in C++. This project is only for the original Flash game.
+</details>
+
+## 📬 Contact
+
+Suggestions, bug reports or rights-holder requests (including DMCA notices):
+**[whylurking@gmail.com](mailto:whylurking@gmail.com)**
+
+You can also open an **[issue](../../issues)** for bugs and suggestions.
+
+## ⚖️ Legal notice
+
+- **This repository contains no game assets**: no graphics, sounds, music or game files. The program reads them
+  at startup from the `Isaac.exe` of **your own Steam copy**.
+- **You must buy the original game to play**, on
+  [Steam](https://store.steampowered.com/app/113200/The_Binding_of_Isaac/). If you enjoy this project, please
+  support the original creators.
+- The Switch version is homebrew software. It contains no code or assets belonging to Nintendo, and it does not
+  include or facilitate anything to bypass the console's protections.
+- This is a **free, non-profit** fan project with no affiliation to Edmund McMillen, Florian Himsl, Nicalis, Valve
+  or Nintendo. *The Binding of Isaac* is © Edmund McMillen and Florian Himsl. All trademarks belong to their
+  respective owners.
+- If you are a rights holder and have any concern, please write to the contact address above and it will be
+  addressed promptly.
+- MIT license applies only to the source code in this repository (engine and tooling). It does not grant any rights
+  to The Binding of Isaac, its assets, or any code generated from it, which remain © Edmund McMillen and Florian Himsl.
+
+---
+
+# 🔬 For the curious: how it's made
+
+> This part is technical. If you just want to play, everything you need is above.
+
+## Static recompilation from AVM1 to C++
+
+The game is written in **ActionScript 2**, which runs on Flash 8's AVM1 virtual machine. Instead of interpreting it, this
+project **translates every block of bytecode into a C++ function** that is compiled together with the engine:
+
+```mermaid
+flowchart LR
+    A["Isaac.exe<br/>(Zinc projector)"] -->|decrypt + zlib| B["Original SWF"]
+    B -->|FFDec: root script| C["HD patch<br/>(patchhd.py)"]
+    C --> D["Patched SWF"]
+    D -->|tools/gen.py| E["Generated C++<br/>(one namespace per game)"]
+    E --> F["isaac / IsaacRecomp.exe / isaac.nro"]
+    G["Native engine<br/>(rt/: SDL2 + OpenGL 3.3)"] --> F
+    A -.->|at runtime:<br/>graphics, sounds, music| F
+```
+
+|                              | Original | Wrath of the Lamb | Eternal Edition |
+|------------------------------|---------:|------------------:|----------------:|
+| Frame scripts                | 495      | 679               | 712             |
+| Functions                    | 180      | 225               | 245             |
+| Button actions               | 54       | 62                | 62              |
+| Generated C++ lines          | 87,255   | 116,915           | 146,142         |
+| Preloaded graphics           | 1,883    | 2,336             | 2,357           |
+
+- **No interpreter.** All 47 AVM1 opcodes the game uses are translated to C++. The VM stack is resolved at
+  compile time whenever possible, so operands live in local variables instead of a dynamic stack.
+- **Faithful Flash Player 8 semantics,** ported from [Ruffle](https://github.com/ruffle-rs/ruffle). This covers
+  scopes, `for-in` order, the per-frame action queue, `gotoAndStop` rewinding with `PlaceObject` merging, and
+  script depths.
+- **Three games, one executable.** Each version is generated into its own `namespace` (`fl::og`, `fl::wotl`,
+  `fl::eternal`) with its own script tables. At load time, the version is identified by the SWF's CRC-32 and its
+  code is bound in.
+
+## Reading the game from `Isaac.exe`
+
+The Steam version is an **MDM Zinc** projector packed with UPX. After the PE image there is a container holding
+the SWF: CWS, zlib level 6, prefixed by its length and encrypted with an XOR key `k(i) = a + 0x21·i`. The value
+of `a` changes with each executable (`0xd5` original, `0x83` WotL, `0xa1` Eternal) and is derived from the `CWS`
+header. The decrypted SWF is **byte-for-byte identical** to the original.
+
+## Engine
+
+- **Two main threads.** The logic runs at a fixed 30 Hz and publishes an immutable *snapshot* of the display
+  list every tick. The renderer draws at the display's refresh rate, interpolating between the last two
+  snapshots. Scale and rotation are interpolated separately, and jumps are detected so they aren't smeared.
+- **Vector rasterization** with [PlutoVG](https://github.com/sammycage/plutovg), spread across CPU cores and
+  packed into a 2048² texture atlas, with uploads through a ring of PBOs.
+- **No antialiasing seams.** Flash rasterizes each shape in one pass, but painting each fill separately lets the
+  background bleed through shared edges. A *saturate* operator was added to PlutoVG that paints front to back
+  with `dst += src · min(coverage, 1 − dst.a)`.
+  <p align="center"><img src="docs/media/seams.png" alt="Antialiasing seams before and after" width="80%"></p>
+- **GPU BitmapData.** Layers the game only displays are drawn as GPU operations into an FBO. Their pixels only
+  come back to the CPU if the code reads them.
+- **Asynchronous preloading** during the opening cutscene, from a per-game built-in list that grows with what
+  each player sees.
+- **Mark-and-sweep garbage collector** with a time-budgeted sweep, so it never causes hitches.
+- **Nintendo Switch.** Logic, rendering and rasterization are pinned to separate cores with tuned thread
+  priorities, because Horizon doesn't time-slice threads of equal priority. Frame pacing uses GPU fences so
+  that no more than one frame is queued.
+
+## Testing
+
+- **Deterministic headless mode** (`--headless`): input scripts, screenshots at given ticks, and a random-input
+  seed (`--monkey`).
+- **Regression:** the same seed produces the same logic sequence across engine versions, and screenshots are
+  compared pixel by pixel.
+- **Stability:** tens of thousands of ticks of random input on all three versions, with no failures.
+
+## Building from source
+
+```bash
+# Linux
+cmake -G Ninja -B build && ninja -C build
+
+# Windows (MinGW-w64 cross-compile)
+cmake -G Ninja -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw64.cmake \
+      -DCMAKE_PREFIX_PATH=<SDL2-mingw>/x86_64-w64-mingw32 && ninja -C build-win
+
+# Nintendo Switch (devkitPro: devkitA64 + libnx + switch-sdl2 + switch-mesa)
+export DEVKITPRO=/opt/devkitpro
+cmake -G Ninja -B build-switch -DCMAKE_TOOLCHAIN_FILE=cmake/switch.cmake && ninja -C build-switch
+```
+
+Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](NOTES.md).
+
+## Credits
+
+- **whylurking**: author of the recomp.
+- **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
+- **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
+- **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
+- **[JPEXS FFDec](https://github.com/jindrapetrik/jpexs-decompiler)**: decompiler used by the tooling.
+- **[SDL2](https://www.libsdl.org/)**, **[PlutoVG](https://github.com/sammycage/plutovg)**,
+  **[stb_image](https://github.com/nothings/stb)**, **[dr_mp3](https://github.com/mackron/dr_libs)**,
+  **[libnx](https://github.com/switchbrew/libnx)** and **[Mesa](https://www.mesa3d.org/)**: their licenses ship with
+  each package.
+
+<p align="center"><sub>Made with 😢 and plenty of tears by whylurking.</sub></p>
