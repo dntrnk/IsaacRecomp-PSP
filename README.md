@@ -359,7 +359,7 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
 
 ## Credits
 
-- **Lurkered**: creator of the recomp.
+- **Whylurking**: creator of the recomp.
 - **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
 - **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
 - **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
@@ -369,4 +369,4 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
   **[libnx](https://github.com/switchbrew/libnx)** and **[Mesa](https://www.mesa3d.org/)**: their licenses ship with
   each package.
 
-<p align="center"><sub>Made with 😢 and plenty of tears by Lurkered.</sub></p>
+<p align="center"><sub>Made with 😢 and plenty of tears by Whylurking.</sub></p>
