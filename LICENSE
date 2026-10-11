@@ -1,6 +1,6 @@
 MIT License (engine and tools)
 
-Copyright (c) 2026 Lurkered
+Copyright (c) 2026 whylurking
 
 This license covers the original code of this project: the runtime engine (rt/),
 the tools (tools/), the build files (CMakeLists.txt, cmake/, switch/build-devkit.sh)
