@@ -12,11 +12,11 @@
 
 <p align="center">
   <b>The Binding of Isaac (Flash), rebuilt as a native program.</b><br>
-  No Flash Player, no emulator. The game you know, at 60 fps (or more) and high resolution.
+  No Flash Player, no emulator: the same game you know, at 60 fps and in high resolution.
 </p>
 
 > [!IMPORTANT]
-> **This recomp was made by whylurking with the help of Artificial Intelligence.**
+> **This recomp was made by Lurkered with the help of Artificial Intelligence.**
 > It is a free, non-profit fan project with no affiliation to Edmund McMillen, Florian Himsl, Nicalis, Valve or Nintendo.
 >
 > **The game is not included.** To play, you need your own original copy from Steam:
@@ -247,7 +247,7 @@ No. Those are a different game, rewritten from scratch in C++. This project is o
 ## 📬 Contact
 
 Suggestions, bug reports or rights-holder requests (including DMCA notices):
-**[whylurking@gmail.com](mailto:whylurking@gmail.com)**
+**[contact@example.com](mailto:contact@example.com)**
 
 You can also open an **[issue](../../issues)** for bugs and suggestions.
 
@@ -265,8 +265,6 @@ You can also open an **[issue](../../issues)** for bugs and suggestions.
   respective owners.
 - If you are a rights holder and have any concern, please write to the contact address above and it will be
   addressed promptly.
-- MIT license applies only to the source code in this repository (engine and tooling). It does not grant any rights
-  to The Binding of Isaac, its assets, or any code generated from it, which remain © Edmund McMillen and Florian Himsl.
 
 ---
 
@@ -361,7 +359,7 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
 
 ## Credits
 
-- **Whylurking**: author of the recomp.
+- **Lurkered**: creator of the recomp.
 - **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
 - **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
 - **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
@@ -371,4 +369,4 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
   **[libnx](https://github.com/switchbrew/libnx)** and **[Mesa](https://www.mesa3d.org/)**: their licenses ship with
   each package.
 
-<p align="center"><sub>Made with 😢 and plenty of tears by whylurking.</sub></p>
+<p align="center"><sub>Made with 😢 and plenty of tears by Lurkered.</sub></p>

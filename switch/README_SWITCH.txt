@@ -1,0 +1,113 @@
+THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew)
+=================================================================
+
+All three versions of the Flash game on Steam are supported: the original, Wrath of the
+Lamb and Eternal Edition (each with its own recompiled code).
+
+This is the same native recomp as on PC (ActionScript translated to C++ plus a custom
+engine) built for Switch as a homebrew application (.nro). There is no Flash emulator and
+no Ruffle inside.
+
+WHAT YOU NEED
+-------------
+- A Switch running custom firmware (Atmosphère) with the Homebrew Menu (hbmenu).
+- The Steam game (any of the three versions): the Isaac.exe file from its install folder
+  (Steam → right-click the game → Manage → Browse local files). It contains all of the
+  game's data; graphics, sounds and music are read from it and are not included here.
+  The other executable, Binding_of_Isaac.exe, is just the Steam launcher: it won't work.
+
+INSTALLATION
+------------
+1. Copy the "switch" folder from this zip to the root of the SD card (it merges with the
+   one you already have). You should end up with:  sd:/switch/isaac/isaac.nro
+2. Copy Isaac.exe from Steam into that same folder:
+      sd:/switch/isaac/Isaac.exe
+   (an extracted .swf works too).
+   To have several versions, copy them under different names, for example
+      Isaac-Original.exe   Isaac-WotL.exe   Isaac-Eternal.exe
+   The program recognizes each version by its contents. If there is more than one, a
+   selection screen appears at startup (D-pad or stick and A, or tap the screen); your
+   choice is preselected next time. Each version has its own save file.
+3. Open the Homebrew Menu by HOLDING R while launching any game (title takeover /
+   "application" mode) and choose "The Binding of Isaac".
+
+   Important: do NOT open it from the Album. In that mode (applet) homebrew only gets
+   about 400 MB, and the game needs around 250 MB of RAM plus GPU memory, so it could run
+   out of memory or stutter. In application mode it has more than 3 GB available.
+
+DISPLAY AND PERFORMANCE
+-----------------------
+- Docked: 1080p. Handheld: 720p. Vector graphics are rasterized at the screen's real
+  resolution and re-rasterized when you dock or undock the console.
+- 60 fps with interpolation, same as on PC: the logic runs at exactly 30 Hz on its own
+  core (core 1, by itself) and the renderer interpolates between ticks on core 0. New
+  graphics are rasterized in the background (core 2): if one isn't ready in time, it
+  appears one frame later instead of freezing the image.
+- Graphics are preloaded in the background during the intro cutscene (it can't be
+  skipped until preloading finishes, a few seconds), so no gaps or blurry versions appear
+  the first time something is shown. If you dock the console during play, graphics are
+  re-rasterized at 1080p as they're needed.
+- Latency: the GPU never has more than one frame queued behind the one being shown
+  (isaac.ini: low_latency = 1). If it ever feels less smooth, try low_latency = 0.
+- This version uses a 960x720 internal stage (1440x1080 on PC) to reduce the memory used
+  by the game's bitmaps: on Switch it looks just as sharp in handheld mode and very close
+  when docked.
+
+CONTROLS
+--------
+During play (they adapt automatically depending on whether you're playing, paused or in
+a menu):
+  Left stick / D-pad          move
+  Right stick                 shoot in that direction
+  A / B / X / Y               shoot right / down / up / left
+  L                           bomb
+  ZL                          active item (the one with charges)
+  R                           consumable (card / pill)
+  ZR (hold for 5 seconds)     restart the current run
+  + or –                      pause
+In menus and the pause screen:
+  Left stick / D-pad          navigate the menu
+  A                           confirm
+  B or –                      back
+  +                           Enter in menus; on the pause screen, resume the game
+                              (– also resumes from pause)
+  Touch screen (handheld)     tap menu and pause buttons (like the mouse on PC).
+                              The touch screen does nothing during gameplay.
+Diagnostics: press both sticks at once (L3 + R3) to show or hide performance data (like
+F3 on PC). While it's on, the data is saved to performance.txt.
+"Delete Save" (in Collection) deletes the save and restarts the program automatically.
+To quit: "Exit Game" in the main menu, or the HOME button and close the program.
+
+FILES IN sd:/switch/isaac/
+--------------------------
+  isaac.nro             the program
+  Isaac*.exe            the Steam game (you provide it; one per version)
+  isaac_save.sol        the Wrath of the Lamb save (isaac_og_save.sol for the original,
+                        isaac_eternal_save.sol for Eternal Edition). Same format as on
+                        PC: they can be copied between PC and Switch.
+  isaac.ini             settings (volume, smooth = 0 for the original 30 fps,
+                        game = og/wotl/eternal, low_latency...)
+  log.txt               program messages from the last session
+  performance.txt       performance data (only if you turned on L3 + R3)
+  preload*.txt          graphics seen on this console that weren't in the included list
+                        (preloaded next time; safe to delete). Old precarga*.txt files
+                        are merged in automatically.
+
+IF SOMETHING GOES WRONG
+-----------------------
+- If a text screen with an error appears, read it: it's almost always because Isaac.exe
+  is missing or isn't the Steam v1.48 version. Press + to exit.
+- If it crashes, goes black or runs slowly, send me:
+    sd:/switch/isaac/log.txt
+    sd:/switch/isaac/performance.txt   (play for a while with L3 + R3 turned on)
+  and tell me whether you opened it in application mode (holding R) or from the Album,
+  and whether the console was docked or handheld.
+- If Atmosphère shows an error report (crash report), the file in
+  sd:/atmosphere/crash_reports/ helps too.
+
+LICENSES
+--------
+The third-party code included in the .nro (libnx, SDL2, Mesa, libdrm_nouveau, PlutoVG,
+dr_mp3, stb_image and the GCC/newlib runtime) is distributed with its licenses, which are
+in the "licenses" folder. The Binding of Isaac is © Edmund McMillen and Florian Himsl;
+this package does not contain any game data.
