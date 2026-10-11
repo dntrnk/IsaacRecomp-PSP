@@ -1,0 +1,21 @@
+# Build output
+build*/
+*.o
+*.obj
+*.nro
+*.nacp
+*.elf
+__pycache__/
+
+# Never commit game files (they belong to the game's owners)
+*.swf
+Isaac*.exe
+Binding_of_Isaac.exe
+
+# Local runtime files
+isaac.ini
+log.txt
+performance.txt
+preload*.txt
+screenshot_*.bmp
+*.sol
