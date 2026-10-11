@@ -1,0 +1,34 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Windows, Linux, Nintendo Switch]
+    validations: {required: true}
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game version
+      options: [Original, Wrath of the Lamb, Eternal Edition]
+    validations: {required: true}
+  - type: input
+    id: release
+    attributes:
+      label: Recomp release
+      placeholder: e.g. v1.0.0
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what happened instead.
+    validations: {required: true}
+  - type: textarea
+    id: files
+    attributes:
+      label: Logs
+      description: |
+        Attach log.txt (and performance.txt for slowdowns, F3 / L3+R3). On Switch, a crash report
+        from sd:/atmosphere/crash_reports/ also helps. Please don't attach any game files.
