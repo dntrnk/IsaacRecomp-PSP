@@ -1,0 +1,9 @@
+name: Suggestion
+description: An idea to improve the recomp
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+    validations: {required: true}
