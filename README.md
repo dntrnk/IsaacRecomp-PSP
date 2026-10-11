@@ -247,7 +247,7 @@ No. Those are a different game, rewritten from scratch in C++. This project is o
 ## 📬 Contact
 
 Suggestions, bug reports or rights-holder requests (including DMCA notices):
-**[contact@example.com](mailto:contact@example.com)**
+**[whylurking@gmail.com](mailto:whylurking@gmail.com)**
 
 You can also open an **[issue](../../issues)** for bugs and suggestions.
 
