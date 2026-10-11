@@ -12,11 +12,11 @@
 
 <p align="center">
   <b>The Binding of Isaac (Flash), rebuilt as a native program.</b><br>
-  No Flash Player, no emulator: the same game you know, at 60 fps and in high resolution.
+  No Flash Player, no emulator. The game you know, at 60 fps (or more) and high resolution.
 </p>
 
 > [!IMPORTANT]
-> **This recomp was made by Lurkered with the help of Artificial Intelligence.**
+> **This recomp was made by whylurking with the help of Artificial Intelligence.**
 > It is a free, non-profit fan project with no affiliation to Edmund McMillen, Florian Himsl, Nicalis, Valve or Nintendo.
 >
 > **The game is not included.** To play, you need your own original copy from Steam:
@@ -361,7 +361,7 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
 
 ## Credits
 
-- **whylurking**: author of the recomp.
+- **Whylurking**: author of the recomp.
 - **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
 - **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
 - **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
