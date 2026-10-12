@@ -169,7 +169,7 @@ void soundStopOwner(Object* owner);
 void soundStopAll();
 void soundStopChan(int ch);
 void soundSetVolumeOwner(Object* owner, float vol, float pan);
-double soundPositionMs(Object* owner);
+double soundPositionMs(Object* owner, bool* active = nullptr);   // active: a channel of this owner is still playing
 bool soundPlayingDef(SoundDef* s);
 int streamStart(StreamInfo* st, int frame0, Object* owner);
 void streamSync(int ch, StreamInfo* st, int frame0);

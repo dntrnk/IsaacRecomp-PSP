@@ -533,6 +533,8 @@ static bool g_recStencil = false, g_recScissor = false;   // recorded state (not
 // tweens) is shown at the monitor's refresh rate. Frame-by-frame drawing changes
 // (another graphic at the same depth) and jumps (teleports, new objects) are applied as-is.
 static SnapPtr g_prevSnap, g_curSnap;
+bool g_retireSnapshots = false;
+static std::mutex g_retireMu; static std::vector<SnapPtr> g_retired;
 struct NodeInterp { int32_t prev = -1; bool snap = true; };
 static std::vector<NodeInterp> g_interp;
 static std::vector<double> g_wscale;
@@ -621,10 +623,20 @@ void renderAdopt(const SnapPtr& s) {
         }
         s->indexed = true;
     }
+    SnapPtr old = std::move(g_prevSnap);
     g_prevSnap = g_curSnap; g_curSnap = s;
     computeInterp();
+    // freeing a snapshot means hundreds of free() calls (nodes, texts, draw scenes); on Switch that competed
+    // with the logic thread's allocator for the malloc lock and showed up as 20-60 ms "adopt" spikes.
+    // With a logic thread, it gets them back and frees them there.
+    if (old && g_retireSnapshots) { std::lock_guard<std::mutex> lk(g_retireMu); g_retired.push_back(std::move(old)); }
+    old.reset();
     g_rstats.adoptMs += msSince(t0);
 }
+void renderFreeRetired() {
+    std::vector<SnapPtr> v;
+    { std::lock_guard<std::mutex> lk(g_retireMu); v.swap(g_retired); }
+}   // (v is destroyed here, on the calling thread)
 const Snapshot* renderCurrent() { return g_curSnap.get(); }
 void renderFinish() { glFinish(); }
 // Low-latency frame pacing (Switch): a fence after each present and, before starting the
@@ -637,9 +649,13 @@ void renderPaceAfterSwap() {
 
     g_paceIdx ^= 1;
 }
-void renderPaceWait() {
-    GLsync f = g_paceFence[g_paceIdx];   // the one for the frame before the last presented one
-    if (f) { glClientWaitSync(f, GL_SYNC_FLUSH_COMMANDS_BIT, 50000000ull); glDeleteSync(f); g_paceFence[g_paceIdx] = nullptr; }
+bool renderPaceWait(uint64_t timeoutNs) {
+    GLsync f = g_paceFence[g_paceIdx];   // the one from the frame before the last presented one
+    if (!f) return true;
+    GLenum r = glClientWaitSync(f, GL_SYNC_FLUSH_COMMANDS_BIT, timeoutNs);
+    if (r == GL_TIMEOUT_EXPIRED) return false;
+    glDeleteSync(f); g_paceFence[g_paceIdx] = nullptr;
+    return true;
 }
 
 // ============================================================ compiling the frame into commands
@@ -818,13 +834,15 @@ static void rqDrain(double preBudgetMs = 1e9) {
 // ---- graphics seen (for preloading next time)
 static std::vector<PreKey> g_learnNew;
 static std::unordered_map<uint64_t, bool> g_learnSeen;
-static uint64_t preHash(const PreKey& p) { return (uint64_t)p.id | (uint64_t)p.kind << 16 | (uint64_t)p.abs << 24 | (uint64_t)p.variant << 32 | (uint64_t)(uint16_t)p.q100 << 48; }
+// (the scale enters by quarter-octave step: keys a few hundredths apart are the same texture and are learned once)
+static uint64_t preHash(const PreKey& p) { int16_t qb = (int16_t)std::ceil(p.q100 / 100.0 - 1e-6); return (uint64_t)p.id | (uint64_t)p.kind << 16 | (uint64_t)p.abs << 24 | (uint64_t)p.variant << 32 | (uint64_t)(uint16_t)qb << 48; }
 static double winQ(int winH) { return 4.0 * std::log2(std::max(1, winH) / 720.0); }
 static void learnKey(const SnapNode& n, const TexKey& k, double scale) {
     if (!n.def || n.objKind == OK_EDITTEXT) return;   // (editable texts change: not preloaded)
     PreKey p; p.id = n.def->id; p.kind = n.objKind; p.abs = g_sceneTargetUid != 0; p.variant = (uint16_t)k.variant;
     double q = 4.0 * std::log2(std::max(1.0 / 64, std::min(64.0, scale)));   // (unrounded: the exact scale)
     p.q100 = (int16_t)std::lround((p.abs ? q : q - winQ(g_winH)) * 100);
+    if (!p.abs && p.q100 > 800) return;   // giant zooms: not worth preloading (see renderPreload)
     if (g_learnSeen.emplace(preHash(p), true).second) g_learnNew.push_back(p);
 }
 std::vector<PreKey> renderTakeLearned() { std::vector<PreKey> v; v.swap(g_learnNew); return v; }
@@ -1176,8 +1194,20 @@ void renderPreload(const std::vector<PreKey>& keys, int winW, int winH, const st
         if (!ok) continue;
         int bucket = (int)std::ceil((p.abs ? p.q100 / 100.0 : p.q100 / 100.0 + winQ(winH)) - 1e-6);   // (like texKeyOf)
         if (bucket < -24 || bucket > 24) continue;
+        // giant zooms (more than 4x the 720p reference) are transient: rasterized on demand, never preloaded
+        if (!p.abs && p.q100 > 800) continue;
         TexKey k{def, p.variant, (int16_t)bucket};
         if (g_cache.count(k) || g_rqInflight.count(k)) continue;
+        {   // budget: preloading never fills more than ~60% of the atlas (the rest is for what the game shows)
+            RasterSrc src; src.kind = p.kind; src.def = def; src.ratio = p.variant; RectF b;
+            if (!contentBoundsSrc(src, b) || !b.valid()) continue;
+            double sc = std::pow(2.0, bucket / 4.0);
+            double area = std::min(4096.0, (b.x1 - b.x0) * sc + 4) * std::min(4096.0, (b.y1 - b.y0) * sc + 4);
+            static double budget = 0;
+            if (budget == 0) budget = 0.6 * (double)std::max(4, g_renderCfg.cacheMB / 16) * kPage * kPage;
+            if (area > budget) continue;
+            budget -= area;
+        }
         RJob* j = new RJob(); j->k = k; j->src.kind = p.kind; j->src.def = def; j->src.ratio = p.variant; j->scale = std::pow(2.0, bucket / 4.0);
         j->pre = true; j->inPreQueue = true;
         g_rqInflight[k] = j; jobs.push_back(j);

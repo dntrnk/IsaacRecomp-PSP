@@ -26,6 +26,9 @@ extern Mat g_stageToWindow;
 bool renderInit();
 // adopts a new snapshot (applies its pixel uploads); the previous one becomes the interpolation source
 void renderAdopt(const SnapPtr& s);
+// with a logic thread (g_retireSnapshots = true) replaced snapshots are freed by it, calling renderFreeRetired()
+extern bool g_retireSnapshots;
+void renderFreeRetired();
 const Snapshot* renderCurrent();
 // draws lerp(previous, current, alpha)
 void renderFrame(int winW, int winH, double alpha);

@@ -177,7 +177,7 @@ bool soundPlayingDef(SoundDef* s) { audioLock(); bool r = false; for (auto& c : 
 void soundSetVolumeOwner(Object* owner, float vol, float pan) {
     audioLock(); for (auto& c : g_chans) if (c.active && c.owner == owner) { c.vol = vol; c.pan = pan; } audioUnlock();
 }
-double soundPositionMs(Object* owner) {
+double soundPositionMs(Object* owner, bool* active) {
     audioLock();
     double r = 0; int best = -1;
     for (auto& c : g_chans) if (c.owner == owner && c.decOk && c.gen > best) {
@@ -185,6 +185,7 @@ double soundPositionMs(Object* owner) {
         r = ((double)c.framesConsumed + c.pos + (double)(c.startFrame > c.skip ? c.startFrame - c.skip : 0)) * 1000.0 / c.srcRate;
     }
     audioUnlock();
+    if (active) *active = best >= 0;
     return r;
 }
 

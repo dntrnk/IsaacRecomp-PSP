@@ -149,6 +149,14 @@ void recompPatchesTick() {
     }
     Value paus = getMemK(root, intern("paus"));
     if (paus.isObj() && paus.o->kind == OK_CLIP) tweakOptions((MovieClip*)paus.o);
+    // Eternal Edition: the HUD's hard-mode mark is set with `hud.hardon._visible = _root.hardmode`. With a save
+    // that never toggled hard mode, hardmode is undefined; in this runtime (as in Ruffle) assigning undefined to
+    // _visible changes nothing, so the mark stayed visible. Hide it whenever hard mode is not on.
+    if (g_game && !strcmp(g_game->tag, "eternal")) {
+        Value hud = getMemK(root, intern("hud"));
+        Value mark = hud.isObj() ? getMemK(hud, intern("hardon")) : VUNDEF;
+        if (mark.isObj() && mark.o->isDisplay() && !truthy(getMemK(root, intern("hardmode")))) ((DisplayObject*)mark.o)->visible = false;
+    }
 }
 // actively playing: _root.a is the game clip and it is not paused (unpause = true)
 bool recompInGameplay(bool* inGame) {

@@ -155,3 +155,41 @@
   color transform + stencil), rasterizing at ~0.5 scale (480x272), a texture atlas in the 2 MB of VRAM,
   and not loading the whole SWF into RAM (preprocess into a package with streamed sounds).
 - The generated code and the AVM1 runtime are portable C++17 with no platform dependencies.
+
+## Input latency (v1.1)
+- Input is read continuously: `pollInput()` runs at the start of each frame and also every ~1 ms while the main
+  thread waits (Switch: GPU fence wait; PC: until 3 ms before the expected vblank, then glFinish; no vsync: the frame
+  limiter). An input no longer waits for the next frame, and no longer slips to the following logic tick when a tick
+  boundary falls inside that wait (model: ~8 ms less on average from press to first visible movement).
+- `interp_lead` (0..0.5, default 0): simT += lead·dt, i.e. optional partial extrapolation of the interpolated view.
+  Rendering only; the logic is untouched.
+
+## Sound clip leak (v1.1)
+- All three games remove each sound's `soundz` clip when `s.duration == s.position`. `position` returned 0 once the
+  channel had finished, so every sound leaked a clip under _root (~4000 after 30 min: logic 30 ms/tick, GC 150 ms/s,
+  eventually bad_alloc on Switch). Now SoundObj keeps the last position, and a sound that played to the end reports
+  position == duration (Flash behaviour). `duration` uses the SWF rate field (5.5/11/22/44 kHz).
+- Preload: keys above q100 = 800 (4x) are neither learned nor preloaded; learning dedupes by scale bucket; preloading
+  stops at ~60% of the atlas (estimated from content bounds).
+
+## Creep / blood damage (v1.1)
+- All three games test floor creep with `blorz.hitTest(x + _X, y + _Y, true)` (`shit()`), and enemies on hazards
+  with `dang2.hitTest(xp, yp, true)`. Flash takes that point in **_root coordinates** (the docs say "Stage"; Ruffle
+  does the same: `avm1_root().local_to_global`). We treated it as stage coordinates, and since _root is scaled
+  (x2.25 PC, x1.5 Switch), the test landed 1.5-2.25x away from the player: blood far away hurt, blood underneath
+  didn't. `mc_hitTest` now maps the point through `_root`'s matrix. Repro: `eval call _root.a parc bloo 300 300`
+  then `eval call _root.a shit 300 300` (true) / `shit 675 675` (false; it was true before).
+
+## GC hitches (v1.1)
+- Switch perf logs after ~30 min: phases of 30-90 s with GC 200-650 ms/s (lazy sweep at its 18 ms/tick ceiling),
+  logic 15-38 ms/tick, "logic delayed" hitches, and 20-70 ms render-thread `adopt` spikes at the same moments
+  (snapshot frees competing for the malloc lock).
+- ~70% of the garbage was short strings rebuilt every tick ("m12-3.mp3", "hat2", numbers as text). `mkstr` now has
+  a weak 8192-entry cache for strings <= 48 chars (Strs are immutable; entries not marked are dropped right after
+  each mark). Garbage per tick in Caves: 117-254 -> 49-75 objects. Headless runs stay bit-identical.
+- `gcCollect(tickMs)`: the sweep never takes the tick past 12 ms (minimum gcSweepMs, so it always progresses), and a
+  mark is postponed on a heavy tick unless the heap is 1.5x over the trigger.
+- Replaced snapshots are handed back to the logic thread (`renderFreeRetired`) instead of being freed on the render
+  thread.
+- Diagnostics: `ISAAC_GCHIST=1` (garbage by type at each collection), `ISAAC_STRPROF=1` (dynamic strings created, by
+  pattern), `--stats` prints the total GC time.

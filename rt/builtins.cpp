@@ -291,8 +291,13 @@ static Value mc_nextDepth(Act&, Value t, int, Value*) {
 static Value mc_hitTest(Act& a, Value t, int argc, Value* argv) {
     DisplayObject* d = asDO(t); if (!d) return VFALSE;
     if (argc >= 2) {
-        extern Mat g_stageToRoot;
-        return VB(hitTestPoint(d, toNum(argv[0]), toNum(argv[1]), argc > 2 && truthy(argv[2])));
+        // The docs say "Stage coordinates", but Flash Player actually takes the point in _root coordinates
+        // (Ruffle does the same). Isaac scales _root (x2.25 on PC, x1.5 on Switch), so without this the
+        // creep/blood test (shit() -> blorz.hitTest) checked a point 1.5-2.25x away from the player.
+        double gx = toNum(argv[0]), gy = toNum(argv[1]);
+        if (!std::isfinite(gx) || !std::isfinite(gy)) return VFALSE;
+        if (vm.root) vm.root->m.apply(gx, gy, gx, gy);
+        return VB(hitTestPoint(d, gx, gy, argc > 2 && truthy(argv[2])));
     }
     Value o = resolveTargetPath(a, arg(argc, argv, 0));
     DisplayObject* e = asDO(o); if (!e) return VFALSE;
@@ -540,9 +545,18 @@ static Value transform_ctor(Act&, Value, int argc, Value* argv) {
 // ============================================================ Sound
 struct SoundObj final : Object {
     DisplayObject* target = nullptr; SoundDef* def = nullptr; float vol = 100, pan = 0;
+    // Flash keeps `position` after the sound ends (== duration) or is stopped: the games remove each
+    // sound's clip when position == duration, so returning 0 there leaked one clip per sound played
+    bool started = false, stopped = false; double lastPos = 0;
     void trace(Tracer& tr) override { Object::trace(tr); tr.mark(target); }
 };
 float g_masterVolume = 1.0f;
+// length in ms from the SWF's sample count and its declared rate (5.5/11/22/44 kHz)
+static double soundDurationMs(const SoundDef* d) {
+    if (!d) return 0;
+    static const double kRates[4] = {5512.5, 11025, 22050, 44100};
+    return std::floor(d->samples * 1000.0 / kRates[d->rate & 3]);
+}
 static SoundObj* asSnd(const Value& v) { return v.isObj() && v.o->kind == OK_SOUND ? (SoundObj*)v.o : nullptr; }
 static Value snd_ctor(Act&, Value, int argc, Value* argv) {
     SoundObj* s = gcNew<SoundObj>(); s->kind = OK_SOUND; s->proto = protos::sound; s->target = asDO(arg(argc, argv, 0));
@@ -559,6 +573,7 @@ static Value snd_start(Act&, Value t, int argc, Value* argv) {
     double off = argn(argc, argv, 0, 0); if (std::isnan(off)) off = 0;
     double lp = argn(argc, argv, 1, 1); int loops = std::isnan(lp) || lp < 1 ? 1 : (int)std::min(lp, 1e6);
     soundStart(s->def, off, loops, s, s->vol / 100.f, s->pan / 100.f);
+    s->started = true; s->stopped = false; s->lastPos = std::floor(off * 1000.0);
     return VUNDEF;
 }
 static Value snd_stop(Act&, Value t, int argc, Value* argv) {
@@ -568,7 +583,13 @@ static Value snd_stop(Act&, Value t, int argc, Value* argv) {
         if (it != g_movie.exports.end()) { extern void soundStopDef(SoundDef*); CharDef* cd = g_movie.get(it->second); if (cd && cd->type == CH_SOUND) soundStopDef((SoundDef*)cd); }
         return VUNDEF;
     }
-    if (!s->target && !s->def) soundStopAll(); else soundStopOwner(s);
+    if (!s->target && !s->def) soundStopAll();
+    else {
+        bool act = false; double ms = soundPositionMs(s, &act);
+        if (act) s->lastPos = std::floor(ms);
+        s->stopped = true;
+        soundStopOwner(s);
+    }
     return VUNDEF;
 }
 static Value snd_setVolume(Act&, Value t, int argc, Value* argv) {
@@ -660,8 +681,13 @@ bool nativeGet(Object* o, Str* k, Value& out) {
         }
         case OK_SOUND: {
             SoundObj* s = (SoundObj*)o;
-            if (k->s == "position") { out = Value(std::floor(soundPositionMs(s))); return true; }
-            if (k->s == "duration") { out = Value(s->def ? std::floor(s->def->samples * 1000.0 / 44100.0) : 0.0); return true; }
+            if (k->s == "position") {
+                bool act = false; double ms = soundPositionMs(s, &act);
+                if (act) s->lastPos = std::floor(ms);
+                else if (s->started && !s->stopped) s->lastPos = soundDurationMs(s->def);   // played to the end
+                out = Value(s->lastPos); return true;
+            }
+            if (k->s == "duration") { out = Value(soundDurationMs(s->def)); return true; }
             return false;
         }
         case OK_TRANSFORM: {

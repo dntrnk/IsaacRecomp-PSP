@@ -85,6 +85,11 @@ Created automatically next to the executable the first time you run it.
   cache_mb = 768      maximum video memory for rasterized textures
   gpu_sync = 1        waits for each refresh before preparing the next frame
                       (steadier pacing; set it to 0 if things feel worse)
+  low_latency = 1     keeps reading keyboard/controller input while waiting for the
+                      refresh, so a press reaches the game up to ~8 ms sooner (0 = off)
+  interp_lead = 0     experimental, 0 to 0.5: draws that fraction of a tick ahead
+                      (less visual delay, but movement can overshoot slightly when you
+                      stop or turn). The game logic is never affected.
   game = wotl         last version played (og, wotl or eternal; the old key
                       "juego" is still accepted)
 
@@ -118,6 +123,24 @@ The same folder also holds log.txt (program messages from the last session) and
 preload.txt / preload_og.txt / preload_eternal.txt (graphics learned on this machine;
 older precarga*.txt files are merged in automatically).
 Not compatible with Flash save data: unlocks start from scratch.
+
+CHANGES IN VERSION 10 (v1.1.0 public release numbering)
+-------------------------------------------------
+- Fixed a slowdown that built up during long sessions (and could end in a crash on
+  Switch): every sound the game played left an invisible clip behind, because
+  Sound.position returned 0 instead of the sound's length once it had finished. After
+  20-30 minutes there were thousands of them. All three versions were affected.
+- Sound.duration now uses each sound's real sample rate.
+- The learned preload list no longer grows without limit, and preloading never takes
+  more than ~60% of the texture atlas.
+- Eternal Edition: the hard-mode mark no longer shows on the HUD when hard mode is off.
+- Fixed damage from blood/creep puddles: the game checked the floor at the wrong
+  spot (1.5x-2.25x further from the top-left corner than the player), so puddles far
+  away could hurt you and the ones under you sometimes didn't. All three versions.
+- Fewer hitches in long sessions: the game now produces ~60% less memory garbage, and
+  cleaning it up can no longer make a game tick miss its deadline.
+- Lower input latency: input is read continuously while waiting for the display
+  (low_latency), plus the experimental interp_lead option.
 
 CHANGES IN VERSION 9
 --------------------

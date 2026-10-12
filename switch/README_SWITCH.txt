@@ -47,8 +47,12 @@ DISPLAY AND PERFORMANCE
   skipped until preloading finishes, a few seconds), so no gaps or blurry versions appear
   the first time something is shown. If you dock the console during play, graphics are
   re-rasterized at 1080p as they're needed.
-- Latency: the GPU never has more than one frame queued behind the one being shown
-  (isaac.ini: low_latency = 1). If it ever feels less smooth, try low_latency = 0.
+- Latency: the GPU never has more than one frame queued behind the one being shown, and
+  the controller keeps being read while the console waits for the GPU, so a button press
+  reaches the game without waiting for the next frame (isaac.ini: low_latency = 1). If it
+  ever feels less smooth, try low_latency = 0. For even less visual delay you can try
+  interp_lead = 0.25 (experimental, up to 0.5): the image is drawn slightly ahead, at the
+  cost of a tiny overshoot when you stop or turn. The game logic is never affected.
 - This version uses a 960x720 internal stage (1440x1080 on PC) to reduce the memory used
   by the game's bitmaps: on Switch it looks just as sharp in handheld mode and very close
   when docked.

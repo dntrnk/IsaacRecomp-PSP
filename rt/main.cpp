@@ -51,7 +51,7 @@ void applyLoadPatches(); void recompPatchesTick(); void recompFullscreenChanged(
 extern std::atomic<int> g_fullscreenRequest; extern std::atomic<bool> g_isFullscreen;
 void renderFinish();
 void renderPaceAfterSwap();
-void renderPaceWait();
+bool renderPaceWait(uint64_t timeoutNs);
 int renderAtlasPages();
 extern float g_audioVolume;
 }
@@ -88,6 +88,7 @@ struct Config {
     bool smooth = true; bool filters = true; int cacheMB = fl::g_lim.defaultCacheMB;
     bool gpuSync = !fl::kIsSwitch;   // glFinish after presenting: on Switch it prevents CPU/GPU overlap
     bool lowLatency = true;          // (without gpu_sync) never leave more than one frame queued on the GPU
+    double interpLead = 0;           // (experimental) draw this fraction of a tick ahead: less visual delay, slight overshoot
 };
 static std::string trim(std::string s) { while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back(); size_t i = 0; while (i < s.size() && isspace((unsigned char)s[i])) i++; return s.substr(i); }
 static void loadConfig(const std::string& path, Config& c) {
@@ -100,7 +101,11 @@ static void loadConfig(const std::string& path, Config& c) {
              "; smooth = 1 interpolates movement and animations to the refresh rate; 0 = original 30 fps\n"
              "smooth = 1\nfilters = 1\n"
              "; cache_mb = memory for already rasterized graphics (MB)\n"
-             "cache_mb = " << fl::g_lim.defaultCacheMB << "\n";
+             "cache_mb = " << fl::g_lim.defaultCacheMB << "\n"
+             "; low_latency = 1 keeps reading input while waiting for the display (0 = off)\n"
+             "low_latency = 1\n"
+             "; interp_lead = 0 (experimental, up to 0.5): draw ahead by that fraction of a tick; less visual delay, slight overshoot\n"
+             "interp_lead = 0\n";
         return;
     }
     while (std::getline(f, line)) {
@@ -110,7 +115,7 @@ static void loadConfig(const std::string& path, Config& c) {
         int n = atoi(v.c_str());
         if (k == "swf") c.swf = v; else if (k == "game" || k == "juego") c.game = v; else if (k == "fullscreen") c.fullscreen = n; else if (k == "vsync") c.vsync = n;
         else if (k == "width") c.width = n; else if (k == "height") c.height = n; else if (k == "volume") c.volume = n;
-        else if (k == "smooth") c.smooth = n; else if (k == "filters") c.filters = n; else if (k == "cache_mb") c.cacheMB = n; else if (k == "gpu_sync") c.gpuSync = n; else if (k == "low_latency") c.lowLatency = n;
+        else if (k == "smooth") c.smooth = n; else if (k == "filters") c.filters = n; else if (k == "cache_mb") c.cacheMB = n; else if (k == "gpu_sync") c.gpuSync = n; else if (k == "low_latency") c.lowLatency = n; else if (k == "interp_lead") c.interpLead = std::max(0.0, std::min(0.5, atof(v.c_str())));
     }
 #ifdef __SWITCH__
     // console memory is fixed: never more than twice the planned amount, and never less (an isaac.ini from an
@@ -665,8 +670,9 @@ int main(int argc, char** argv) {
                 evs.clear();
                 monkeyStep();
                 g_player.timeMs = n * dt * 1000.0;
+                renderFreeRetired();   // (snapshots the renderer is done with: freed here, not on the render thread)
                 double t0 = nowSec();
-                runFrame(); runIntervals(); recompPatchesTick(); gcCollect();
+                runFrame(); runIntervals(); recompPatchesTick(); gcCollect((nowSec() - t0) * 1000.0);
                 SnapPtr snap = buildSnapshot();
                 snap->time = target; snap->logicMs = (nowSec() - t0) * 1000.0;
                 snap->entities = entityCount(); snap->mouseHidden = g_mouseHidden; snap->gameplay = recompInGameplay(&snap->inGame);
@@ -679,6 +685,7 @@ int main(int argc, char** argv) {
             }
         };
         // large stack: recompiled AVM1 code can nest many calls
+        g_retireSnapshots = true;
         SDL_Thread* logic = SDL_CreateThreadWithStackSize([](void* p) -> int { (*(std::function<void()>*)p)(); return 0; }, "logic", 16u << 20, &logicBody);
         if (!logic) {
             logf("could not create the logic thread: %s\n", SDL_GetError());
@@ -736,15 +743,11 @@ int main(int argc, char** argv) {
         double lastLearnSave = nowSec(), preloadT0 = nowSec();
         bool preloading = true;
         const bool pace = vsyncOn && !cfg.gpuSync && cfg.lowLatency;   // (with gpu_sync we already wait for the whole GPU)
-        while (running) {
-            double paceMs = 0;
-            if (pace) { double w0 = nowSec(); renderPaceWait(); paceMs = (nowSec() - w0) * 1000.0; }   // at most one frame queued: less input-to-image latency
-            if (preloading) {
-                size_t left = renderPreloadPending();
-                inputBlocked = left > 0;
-                if (!left) { preloading = false; logf("preload finished in %.1f s (atlas: %d of %d pages)\n", nowSec() - preloadT0, renderAtlasPages(), std::max(4, g_renderCfg.cacheMB / 16)); }
-            }
-            if (nowSec() - lastLearnSave > 20) { lastLearnSave = nowSec(); saveLearned(preloadPath); }   // new graphics → preload.txt
+        // Input polling. Called at the start of every frame and also repeatedly (every ~1 ms) while the main
+        // thread waits for the GPU / the refresh, so a key or button press reaches the logic thread almost
+        // immediately instead of waiting for the next frame (up to one refresh, ~8 ms on average). An input that
+        // arrives just before a tick boundary therefore no longer slips to the following tick.
+        auto pollInput = [&]() {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 switch (e.type) {
@@ -829,6 +832,21 @@ int main(int argc, char** argv) {
 #else
             { int rq = g_fullscreenRequest.exchange(-1); if (rq >= 0) setFullscreen(rq == 1); }   // menu option or F key
 #endif
+        };
+        while (running) {
+            double paceMs = 0;
+            if (pace) {   // at most one frame queued (less input-to-image latency); input keeps being read meanwhile
+                double w0 = nowSec();
+                while (!renderPaceWait(1000000ull)) { pollInput(); if (nowSec() - w0 > 0.1) { renderPaceWait(~0ull); break; } }
+                paceMs = (nowSec() - w0) * 1000.0;
+            }   // at most one frame queued: less input-to-image latency
+            if (preloading) {
+                size_t left = renderPreloadPending();
+                inputBlocked = left > 0;
+                if (!left) { preloading = false; logf("preload finished in %.1f s (atlas: %d of %d pages)\n", nowSec() - preloadT0, renderAtlasPages(), std::max(4, g_renderCfg.cacheMB / 16)); }
+            }
+            if (nowSec() - lastLearnSave > 20) { lastLearnSave = nowSec(); saveLearned(preloadPath); }   // new graphics → preload.txt
+            pollInput();
             double fstart = nowSec();
             if (fstart - lastRefreshCheck > 1.0) {   // the monitor may change (window moved)
                 lastRefreshCheck = fstart;
@@ -846,7 +864,7 @@ int main(int argc, char** argv) {
             if (!procTimes.empty()) { std::vector<double> v(procTimes.begin(), procTimes.end()); std::sort(v.begin(), v.end()); worst = v[std::min(v.size() - 1, v.size() * 9 / 10)]; }
             double want = std::min(0.030, std::max(0.004, worst + 0.002));
             if (want > delta) delta = std::min(want, delta + 0.0005); else delta = std::max(want, delta - 0.0001);
-            double simT = present - delta;
+            double simT = present - delta + cfg.interpLead * dt;   // interp_lead: optional extrapolation (default 0)
             // adopt the snapshots that are due (in order: each may bring new pixels)
             int adopted = 0; double frameLogic = 0;
             g_rstats = RenderStats();
@@ -878,14 +896,22 @@ int main(int argc, char** argv) {
             renderEndFrame();
             double r1 = nowSec();
             SDL_GL_SwapWindow(win);
-            if (vsyncOn && cfg.gpuSync) renderFinish();   // waits for the refresh: the presentation clock stays exact
+            if (vsyncOn && cfg.gpuSync) {
+                // keep reading input until just before the expected refresh, then wait for it as before
+                // (low_latency = 0 restores waiting the whole time inside glFinish)
+                if (cfg.lowLatency) {
+                    double until = lastSwap + period - 0.003;
+                    for (;;) { pollInput(); double left = until - nowSec(); if (left <= 0) break; if (left > 0.0025) SDL_Delay(1); }
+                }
+                renderFinish();
+            }   // waits for the refresh: the presentation clock stays exact
             else if (pace) renderPaceAfterSwap();
             double r2 = nowSec();
             double frameInterval = r2 - lastSwap; lastSwap = r2; renderedFrames++;
             // if the driver ignores vsync, switch to limiting frames manually
             static double ema = 0; ema = ema == 0 ? frameInterval : ema * 0.95 + frameInterval * 0.05;
             if (vsyncOn && renderedFrames > 120 && ema < period * 0.6) { vsyncOn = false; logf("vsync not effective: limiting to %.0f fps\n", refresh); }
-            if (!vsyncOn) { double next = fstart + 1.0 / std::max(60.0, refresh); while (nowSec() < next - 0.002) SDL_Delay(1); }
+            if (!vsyncOn) { double next = fstart + 1.0 / std::max(60.0, refresh); while (nowSec() < next - 0.002) { pollInput(); SDL_Delay(1); } }
             if (perfOn) {
                 double fms = frameInterval * 1000.0, rms = (r1 - r0) * 1000.0, sms = (r2 - r1) * 1000.0;
                 pw.frames++; pw.frameMax = std::max(pw.frameMax, fms); pw.render += rms; pw.renderMax = std::max(pw.renderMax, rms); pw.swap += sms + paceMs;
@@ -937,7 +963,7 @@ int main(int argc, char** argv) {
         for (auto& kv : byN) logf("[stats]   entities %3d-%3d: %6d ticks, mean logic %.2f ms, %.0f new objects/tick\n", kv.first, kv.first + 4,
                                   std::get<1>(kv.second), std::get<0>(kv.second) / std::get<1>(kv.second), std::get<2>(kv.second) / std::get<1>(kv.second));
     }
-    if (stats) { rasterMemStats(); logf("[mem] heap objects %zu, SWF %zu MB\n", gcCount(), g_movie.data.size() >> 20); }
+    if (stats) { rasterMemStats(); logf("[mem] heap objects %zu, SWF %zu MB, GC total %.1f ms\n", gcCount(), g_movie.data.size() >> 20, g_gcMs); }
     logf("logic ticks: %u, frames drawn: %llu\n", g_player.tick, (unsigned long long)renderedFrames);
     sharedObjectFlushAll();
     if (!wavPath.empty()) { fl::audioDumpClose(); }

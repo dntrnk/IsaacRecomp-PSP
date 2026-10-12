@@ -1,0 +1,17 @@
+210 down 32
+212 up 32
+320 down 32
+322 up 32
+490 click 705 1020
+600 down 27
+602 up 27
+660 down 32
+662 up 32
+760 down 32
+762 up 32
+860 down 32
+862 up 32
+1000 eval call _root.a parc bloo 300 300
+1003 eval call _root.a shit 300 300
+1003 eval call _root.a shit 675 675
+1004 quit

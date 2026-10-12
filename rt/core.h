@@ -39,7 +39,7 @@ struct Tracer {
 };
 void gcRegister(GcObj* o);
 template <class T, class... A> inline T* gcNew(A&&... a) { T* o = new T(std::forward<A>(a)...); o->onHeap = 1; gcRegister(o); return o; }
-void gcCollect();                 // only between frames (no live activations)
+void gcCollect(double tickMs = 0); // only between frames (no live activations); tickMs = logic time already spent this tick
 void gcAddRoot(GcObj** slot);     // static root
 void gcPin(GcObj* o);             // never freed and traced as a root (prototypes, native functions)
 size_t gcCount();

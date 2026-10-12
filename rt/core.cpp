@@ -35,6 +35,7 @@ static size_t g_extBytes = 0;
 void gcExternalAlloc(size_t bytes) { g_extBytes += bytes; }
 
 bool g_gcLog = false;
+static void strCacheDropDead();
 // Mark-and-sweep GC with lazy sweeping: marking (live objects only) is fast; dead objects are
 // freed gradually over the following frames. An unmarked object is unreachable and can never
 // become reachable again, so freeing it later is safe.
@@ -55,16 +56,24 @@ static void sweepSome(double budgetMs) {
     if (g_sweepPos >= g_sweep.size()) { g_sweep.clear(); g_sweepPos = 0; }
 }
 double g_gcMs = 0;   // accumulated time spent in the collector (F3 diagnostics)
-void gcCollect() {
+// The collector never takes the tick past this (logic + GC, ms; a tick has 33 ms): when it went up to 18 ms
+// of sweeping on top of a busy tick, logic missed its deadline and the render thread stuttered.
+static constexpr double kGcTickTargetMs = 12.0;
+void gcCollect(double tickMs) {
     if (!g_sweep.empty()) {   // a few ms per tick until done
         auto s0 = std::chrono::steady_clock::now();
-        // if dead objects pile up faster than they are freed (lots of garbage per tick), free faster
+        // if dead objects pile up faster than they are freed (lots of garbage per tick), free faster,
+        // but only within the tick's headroom (always at least gcSweepMs, so the sweep keeps progressing)
         size_t left = g_sweep.size() - g_sweepPos, thr = std::max(g_lastLive, g_lim.gcMinLive) * 2;
-        sweepSome(g_lim.gcSweepMs * (left > thr ? 3 : 1) * (g_heap.size() > 2 * thr ? 2 : 1));
+        double want = g_lim.gcSweepMs * (left > thr ? 3 : 1) * (g_heap.size() > 2 * thr ? 2 : 1);
+        sweepSome(std::max(g_lim.gcSweepMs, std::min(want, kGcTickTargetMs - tickMs)));
         g_gcMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
         return;
     }
-    if (g_heap.size() < std::max(g_lastLive, g_lim.gcMinLive) * 2 && g_extBytes < g_lim.extGcBytes) return;
+    size_t trig = std::max(g_lastLive, g_lim.gcMinLive) * 2;
+    if (g_heap.size() < trig && g_extBytes < g_lim.extGcBytes) return;
+    // a heavy tick (room load, explosion...) postpones the mark to a lighter one, unless the heap is far over
+    if (tickMs > kGcTickTargetMs * 0.6 && g_heap.size() < trig + trig / 2) return;
     g_extBytes = 0;
     auto t0 = std::chrono::steady_clock::now(); size_t before = g_heap.size();
     Tracer tr;
@@ -94,6 +103,18 @@ void gcCollect() {
             auto it = pred.find(o); o = it == pred.end() ? nullptr : it->second;
         }
     }
+    if (getenv("ISAAC_GCHIST")) {   // (diagnostics: what the garbage is made of)
+        std::unordered_map<std::string, size_t> h;
+        for (GcObj* o : g_heap) if (!o->marked && !o->pinned) {
+            std::string k = typeid(*o).name();
+            if (Object* ob = dynamic_cast<Object*>(o)) k += "/k" + std::to_string((int)ob->kind);
+            h[k]++;
+        }
+        std::vector<std::pair<size_t, std::string>> v; for (auto& kv : h) v.push_back({kv.second, kv.first});
+        std::sort(v.rbegin(), v.rend());
+        for (size_t i = 0; i < v.size() && i < 8; i++) logf("[gchist] %8zu %s\n", v[i].first, v[i].second.c_str());
+    }
+    strCacheDropDead();   // (unmarked = about to be freed)
     size_t live = tr.count;   // (without walking the whole heap: that cost ~10 ms with 800,000 objects)
     g_sweep.swap(g_heap); g_heap.clear(); g_heap.reserve(live + 65536); g_sweepPos = 0;
     g_lastLive = std::max<size_t>(live + live / 2, g_lim.gcMinLive);
@@ -149,9 +170,35 @@ Str* intern(std::string_view sv) {
     g_intern->emplace(std::string_view(s->s), s);
     return s;
 }
+static std::unordered_map<std::string, size_t>* g_strProf;
+static void strProfDump() {
+    std::vector<std::pair<size_t, std::string>> v; for (auto& kv : *g_strProf) v.push_back({kv.second, kv.first});
+    std::sort(v.rbegin(), v.rend());
+    for (size_t i = 0; i < v.size() && i < 40; i++) fprintf(stderr, "[strprof] %9zu %s\n", v[i].first, v[i].second.c_str());
+}
+// Weak cache of short dynamic strings: the game rebuilds the same small strings every tick ("m12-3.mp3",
+// "hat2", numbers converted to text...), and those were ~70% of all garbage. Identical content returns the
+// same Str (they are immutable). It does not keep anything alive: entries whose Str was not marked are
+// dropped at each collection (gcCollect), before the sweep frees them.
+static constexpr size_t kStrCache = 8192, kStrCacheMaxLen = 48;
+static Str* g_strCache[kStrCache];
+static void strCacheDropDead() { for (auto& e : g_strCache) if (e && !e->marked) e = nullptr; }
 Str* mkstr(std::string v) {
     if (v.size() <= 1) return intern(v);
-    Str* s = new Str(std::move(v)); s->onHeap = 1; gcRegister(s); return s;
+    Str** slot = nullptr;
+    if (v.size() <= kStrCacheMaxLen) {
+        slot = &g_strCache[std::hash<std::string_view>()(v) & (kStrCache - 1)];
+        if (*slot && (*slot)->s == v) return *slot;
+    }
+    static bool prof = getenv("ISAAC_STRPROF") != nullptr;
+    if (prof) {
+        if (!g_strProf) { g_strProf = new std::unordered_map<std::string, size_t>; atexit(strProfDump); }
+        std::string k = v.substr(0, 40); for (auto& c : k) if (c >= '0' && c <= '9') c = '#';
+        (*g_strProf)[k]++;
+    }
+    Str* s = new Str(std::move(v)); s->onHeap = 1; gcRegister(s);
+    if (slot) *slot = s;
+    return s;
 }
 
 namespace atoms {
