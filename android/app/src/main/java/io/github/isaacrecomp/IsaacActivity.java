@@ -9,8 +9,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
+import android.content.Context;
+import android.util.DisplayMetrics;
+import android.view.SurfaceHolder;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLSurface;
 
 import java.io.File;
 
@@ -27,6 +31,46 @@ public class IsaacActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         sSelf = this;
         super.onCreate(savedInstanceState);
+    }
+
+    /**
+     * The game may render at a lower resolution than the screen (SurfaceHolder.setFixedSize: the display hardware
+     * scales it up for free). SDL normalizes touches by the surface's buffer size; with a fixed size the touch
+     * coordinates are still in screen pixels, so normalize by the view's size instead.
+     */
+    static class IsaacSurface extends SDLSurface {
+        IsaacSurface(Context context) { super(context); }
+        @Override
+        public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+            super.surfaceChanged(holder, format, width, height);
+            if (getWidth() > 0 && getHeight() > 0) { mWidth = getWidth(); mHeight = getHeight(); }
+        }
+    }
+
+    @Override
+    protected SDLSurface createSDLSurface(Context context) {
+        return new IsaacSurface(context);
+    }
+
+    /** Shorter side of the screen in pixels (landscape: its height). */
+    public static int screenHeight() {
+        if (sSelf == null) return 0;
+        DisplayMetrics m = new DisplayMetrics();
+        sSelf.getWindowManager().getDefaultDisplay().getRealMetrics(m);
+        return Math.min(m.widthPixels, m.heightPixels);
+    }
+
+    /** Render at this height (keeping the screen's aspect ratio); 0 or the screen height = native resolution. */
+    public static void setRenderHeight(final int h) {
+        if (sSelf == null) return;
+        sSelf.runOnUiThread(() -> {
+            if (mSurface == null) return;
+            DisplayMetrics m = new DisplayMetrics();
+            sSelf.getWindowManager().getDefaultDisplay().getRealMetrics(m);
+            int W = Math.max(m.widthPixels, m.heightPixels), H = Math.min(m.widthPixels, m.heightPixels);
+            if (h <= 0 || h >= H) mSurface.getHolder().setSizeFromLayout();
+            else mSurface.getHolder().setFixedSize(Math.round((float) W * h / H) & ~1, h);
+        });
     }
 
     @Override
