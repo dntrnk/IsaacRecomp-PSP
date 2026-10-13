@@ -19,3 +19,10 @@ performance.txt
 preload*.txt
 screenshot_*.bmp
 *.sol
+
+# Android build
+android/.gradle/
+android/app/.cxx/
+android/local.properties
+*.apk
+*.keystore
