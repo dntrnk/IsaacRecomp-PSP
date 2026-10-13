@@ -96,6 +96,7 @@ Created automatically next to the executable the first time you run it.
                       "juego" is still accepted)
   performance = 0     1 = performance diagnostics always on (same as F3, see below)
   touch_controls = 1  (Android only) 0 hides the on-screen joysticks
+  render_height = 0   (Android only) rendering resolution, 0 = automatic (see ANDROID)
 
 IF YOU NOTICE STUTTERING OR SLOWDOWNS: F3
 -----------------------------------------
@@ -129,16 +130,22 @@ or newer and OpenGL ES 3.0.
    newer) or for access to your files: the game, isaac.ini, the saves and log.txt all
    live in that folder.
 Touch controls: put a finger on the left half of the screen to move and on the right
-half to shoot; a joystick appears under each finger and disappears when you lift it.
-Tap the bomb counter to drop a bomb, the "SPACE" box to use the active item and the pill/
-card (top right, when you have one) to use it. In menus, tap the options; on screens
-without options (cutscenes, title cards) a tap continues. The back button/gesture
-pauses the game (and goes back in menus).
+half to shoot; a joystick appears where the finger lands, stays there while you slide
+it, and disappears when you lift it. Tap the bomb counter to drop a bomb, the "SPACE"
+box to use the active item and the pill/card (top right, when you have one) to use it.
+The pause button sits right of "-LIFE-"; the back button/gesture also pauses (and goes
+back in menus). In menus, tap the options; on screens without options (cutscenes,
+title cards) a tap continues. While the game is still loading its graphics (the first
+seconds, during the opening cutscene) touches are ignored; touching shows the progress.
 Bluetooth or USB controllers work as on PC (see CONTROLS); the joysticks only appear
 when you touch the screen.
 Performance diagnostics: set performance = 1 in IsaacRecomp/isaac.ini; the overlay
 appears and IsaacRecomp/performance.txt is written.
-The game runs at 960x720 (like on Switch), scaled to the screen with black bars.
+The game runs at 960x720 (like on Switch), scaled to the screen with black bars. To keep
+60 fps it renders at 720 lines and, if the device still can't keep up during play, goes
+down to 600, 540 or 480 by itself (remembered in isaac.ini as auto_height). To choose
+yourself, set render_height in isaac.ini (e.g. 1080 for the sharpest image, 480 for the
+fastest); 0 = automatic.
 
 SAVE DATA
 ---------

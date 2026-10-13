@@ -216,6 +216,24 @@
   title cards. Back key: P in game (pause/unpause), Esc in menus (title: the game's quit dialog).
 - Controllers (all SDL platforms): context-aware mapping like Switch (gameplay / pause / menu): A confirms and B goes
   back in menus; Start/Back pause in game.
+- First device test (a mid-range phone): menu 18-25 fps (17 blurs on the title
+  screen; each recomputed blur = FBO switches, very expensive on tiled GPUs), gameplay ~50 fps with many HELD
+  frames, preload 34 s, and a tap skipped the intro during the preload (type 4 was not blocked). Changes:
+  * render resolution: `IsaacActivity.setRenderHeight` → `SurfaceHolder.setFixedSize` (the display hardware scales
+    for free). `IsaacSurface` re-normalizes touches by the view size (SDL divides by the buffer size). Default 720
+    lines; automatic mode steps down 720→600→540→480 when gameplay stays <88% of the refresh for 10 s with the time
+    in render/GPU wait (not HELD), stored as `auto_height`. `render_height` forces a value.
+  * `gpu_sync` off on Android (glFinish after swap serialized CPU and GPU): fence pacing as on Switch.
+  * blurs on mobile (`filterBudget` 4/frame, `filterMaxAge` 3, `filterLowRes`): changed blurs beyond the budget
+    show their previous result (refreshed at least every 3 frames); smaller RTs. Overlay shows `BLURS (REDONE)`
+    and upload time.
+  * threads: logic and render pinned to the fastest cores (cpuinfo_max_freq), helpers to the others
+    (`platformSetThread`: prio 0x2C = main roles).
+  * taps blocked while preloading; touching shows "LOADING n%" (`renderHint`). `_exit` at the end (exit ran static
+    destructors under live helper threads: FORTIFY "destroyed mutex"). Saves flushed on the logic thread when
+    the app goes to the background.
+  * joysticks: radius 8.5% of the screen height, base fixed (knob clamps at the edge). Pause button right of
+    "-LIFE-" (root rect 588,4-616,32; touch area +40%), drawn by `renderPauseButton`.
 - Testing on PC: `ISAAC_TOUCH=1`, `ISAAC_TOUCH_INJECT=file` (synthetic touches/back/eval/screenshots in the threaded
   loop), `ISAAC_INPUT_LOG=1`. Under Xvfb without an audio device the opening cutscene can end by itself early; from
   there the title's Start did not react once (not seen when the intro is skipped with a tap).
