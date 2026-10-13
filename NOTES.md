@@ -237,3 +237,9 @@
 - Testing on PC: `ISAAC_TOUCH=1`, `ISAAC_TOUCH_INJECT=file` (synthetic touches/back/eval/screenshots in the threaded
   loop), `ISAAC_INPUT_LOG=1`. Under Xvfb without an audio device the opening cutscene can end by itself early; from
   there the title's Start did not react once (not seen when the intro is skipped with a tap).
+- Second device test: performance fine. Fixes: the game did not cover the whole screen (system bars) → the activity
+  forces immersive mode itself (`goImmersive`, on focus/resume; cutout short edges). Audio sounded worse than on PC:
+  we mixed at 44.1 kHz and SDL resampled again to the device's 48 kHz; now the device is opened with
+  `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE` (48 kHz requested on Android) and we mix at its rate, with Catmull-Rom
+  interpolation instead of linear (3 samples of history across refills; channel end timing and Sound.position
+  unchanged, headless runs stay identical).
