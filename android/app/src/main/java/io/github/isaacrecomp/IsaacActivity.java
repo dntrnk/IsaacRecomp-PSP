@@ -72,6 +72,10 @@ public class IsaacActivity extends SDLActivity {
             DisplayMetrics m = new DisplayMetrics();
             sSelf.getWindowManager().getDefaultDisplay().getRealMetrics(m);
             int W = Math.max(m.widthPixels, m.heightPixels), H = Math.min(m.widthPixels, m.heightPixels);
+            // the view must keep filling the screen: SDL adds it without layout params, and a SurfaceView measures
+            // itself from the fixed buffer size (it showed in a corner at 1:1)
+            mSurface.setLayoutParams(new android.widget.RelativeLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT));
             if (h <= 0 || h >= H) mSurface.getHolder().setSizeFromLayout();
             else mSurface.getHolder().setFixedSize(Math.round((float) W * h / H) & ~1, h);
         });
