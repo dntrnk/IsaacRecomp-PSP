@@ -15,12 +15,13 @@ on:
 
 jobs:
   apk:
-    runs-on: ubuntu-latest
+    # pinned (instead of ubuntu-latest) so a new runner image can't change the toolchain under us
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -49,7 +50,7 @@ jobs:
           mkdir -p ../out
           cp app/build/outputs/apk/release/*.apk ../out/IsaacRecomp.apk
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: IsaacRecomp-Android
           path: out/IsaacRecomp.apk
