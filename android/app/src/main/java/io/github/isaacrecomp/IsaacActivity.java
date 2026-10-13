@@ -12,6 +12,10 @@ import android.provider.Settings;
 import android.content.Context;
 import android.util.DisplayMetrics;
 import android.view.SurfaceHolder;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
@@ -84,9 +88,38 @@ public class IsaacActivity extends SDLActivity {
         return a != null ? a : new String[0];
     }
 
+    /** Full screen: no status or navigation bar (a swipe from the edge shows them for a moment), notch area used. */
+    @SuppressWarnings("deprecation")
+    private void goImmersive() {
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) goImmersive();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        goImmersive();
         // back from the system settings: ask again if access is still missing
         if (sWantStorage) {
             if (hasStorageAccess()) { if (mDialog != null) mDialog.dismiss(); mDialog = null; }
