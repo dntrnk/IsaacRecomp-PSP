@@ -265,3 +265,7 @@
   D-pad and `joystick_acceleration = 0` keep scale 1 (headless runs and determinism unaffected). Switch: in
   gameplay the left stick position is read directly (`padGetStickPos`) instead of the digital StickL buttons.
   Measured: scale 1 / 0.7 / 0.4 = 211 / 148 / 85 px/s.
+- Switch (v1.2): `touch_controls` defaults to 1 on Switch as well, so the handheld touch screen uses the same
+  `TouchControls` as Android (sticks, HUD taps, menus as mouse + tap = Space). The old Switch-only path
+  (`switchTouch`: menus only) remains for `touch_controls = 0`. The pause button is drawn only in handheld mode
+  (`appletGetOperationMode`). The .nro metadata (nacptool) carries the author and version 1.2.0.

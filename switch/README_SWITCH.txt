@@ -1,5 +1,5 @@
-THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew)
-=================================================================
+THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.2.0
+=================================================================================
 
 All three versions of the Flash game on Steam are supported: the original, Wrath of the
 Lamb and Eternal Edition (each with its own recompiled code).
@@ -75,8 +75,20 @@ In menus and the pause screen:
   B or –                      back
   +                           Enter in menus; on the pause screen, resume the game
                               (– also resumes from pause)
-  Touch screen (handheld)     tap menu and pause buttons (like the mouse on PC).
-                              The touch screen does nothing during gameplay.
+  Touch screen (handheld)     tap menu and pause buttons (like the mouse on PC); on
+                              screens without buttons (cutscenes) a tap continues.
+Touch screen during play (handheld mode, as on Android):
+  Finger on the left half     a joystick appears under it: move (how far you push it
+                              sets your speed, see joystick_acceleration)
+  Finger on the right half    a second joystick: shoot
+  Bomb counter / SPACE box    drop a bomb / use the active item
+  Pill or card (top right)    use it
+  Button right of -LIFE-      pause (only shown in handheld mode)
+  The joysticks and buttons can be mixed freely with the controller. To turn the touch
+  controls off: touch_controls = 0 in isaac.ini.
+Analog movement: the left stick's speed follows how far you push it (full speed at 3/4
+of the way, never faster than the original). joystick_acceleration = 0 in isaac.ini
+restores the original all-or-nothing movement.
 Diagnostics: press both sticks at once (L3 + R3) to show or hide performance data (like
 F3 on PC). While it's on, the data is saved to performance.txt.
 "Delete Save" (in Collection) deletes the save and restarts the program automatically.
@@ -90,7 +102,8 @@ FILES IN sd:/switch/isaac/
                         isaac_eternal_save.sol for Eternal Edition). Same format as on
                         PC: they can be copied between PC and Switch.
   isaac.ini             settings (volume, smooth = 0 for the original 30 fps,
-                        game = og/wotl/eternal, low_latency...)
+                        game = og/wotl/eternal, low_latency, touch_controls,
+                        joystick_acceleration...)
   log.txt               program messages from the last session
   performance.txt       performance data (only if you turned on L3 + R3)
   preload*.txt          graphics seen on this console that weren't in the included list

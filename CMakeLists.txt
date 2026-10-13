@@ -83,8 +83,8 @@ elseif(NINTENDO_SWITCH)
   target_link_libraries(isaac PRIVATE SDL2 EGL glapi drm_nouveau nx m)
   # .elf -> .nro (icon + hbmenu metadata)
   set(APP_TITLE "The Binding of Isaac")
-  set(APP_AUTHOR "native recomp")
-  set(APP_VERSION "5.0")
+  set(APP_AUTHOR "whylurking")
+  set(APP_VERSION "1.2.0")
   add_custom_command(TARGET isaac POST_BUILD
     COMMAND ${DEVKITPRO}/tools/bin/nacptool --create "${APP_TITLE}" "${APP_AUTHOR}" "${APP_VERSION}" isaac.nacp
     COMMAND ${DEVKITPRO}/tools/bin/elf2nro $<TARGET_FILE:isaac> isaac.nro --icon=${CMAKE_SOURCE_DIR}/switch/icon.jpg --nacp=isaac.nacp

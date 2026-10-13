@@ -103,8 +103,8 @@ struct Config {
     bool gpuSync = !fl::kIsSwitch && !fl::kIsAndroid;   // glFinish after presenting: on Switch/Android it prevents CPU/GPU overlap
     bool lowLatency = true;          // (without gpu_sync) never leave more than one frame queued on the GPU
     double interpLead = 0;           // (experimental) draw this fraction of a tick ahead: less visual delay, slight overshoot
-#ifdef __ANDROID__
-    bool touchControls = true;       // on-screen joysticks + taps on the HUD (see touch.h)
+#if defined(__ANDROID__) || defined(__SWITCH__)
+    bool touchControls = true;       // on-screen joysticks + taps on the HUD (see touch.h; Switch: handheld touch screen)
 #else
     bool touchControls = false;      // (PC: for testing, with a touch screen or mouse-generated touches)
 #endif
@@ -134,9 +134,11 @@ static void loadConfig(const std::string& path, Config& c) {
              "; joystick_acceleration = 1: with an analog stick (controller, Switch, touch joystick) the speed follows how far\n"
              ";   it is pushed, for small precise moves (top speed unchanged); 0 = always full speed, as on the keyboard\n"
              "joystick_acceleration = 1\n"
-#ifdef __ANDROID__
-             "; touch_controls = 0 hides the on-screen joysticks (when playing with a controller only)\n"
+#if defined(__ANDROID__) || defined(__SWITCH__)
+             "; touch_controls = 0 turns off the touch joysticks, HUD taps and pause button (touch then only works in menus)\n"
              "touch_controls = 1\n"
+#endif
+#ifdef __ANDROID__
              "; render_height = 0 picks the resolution automatically (starts at 720 and goes down if the device can't keep\n"
              ";   60 fps); or force one: 1080 (or the screen's: sharpest), 720, 600, 540, 480 (fastest)\n"
              "render_height = 0\n"
@@ -940,7 +942,7 @@ int main(int argc, char** argv) {
         double lastLearnSave = nowSec(), preloadT0 = nowSec();
         bool preloading = true; size_t preloadLeft = 0;
         const bool pace = vsyncOn && !cfg.gpuSync && cfg.lowLatency;   // (with gpu_sync we already wait for the whole GPU)
-        // ---- touch screen (Android; on PC with touch_controls = 1): joysticks, HUD taps, menus (touch.h)
+        // ---- touch screen (Android, Switch handheld; on PC with touch_controls = 1): joysticks, HUD taps, menus (touch.h)
         TouchControls touch({
             [&](int code, bool down) { pushIn({0, code, down && code == 32 ? 32 : 0, down, 0, 0}); },
             [&](int type, double sx, double sy) { pushIn({1, type, 0, false, sx, sy}); },
@@ -1206,7 +1208,12 @@ int main(int argc, char** argv) {
             renderFrame(dw, dh, alpha);
             if (touchUI) {
                 TouchStick ts[2]; if (touch.sticks(ts)) renderTouchSticks(ts, 2);
-                if (cur && cur->gameplay && (cur->touchMask & 8)) {   // pause button next to -LIFE-
+#ifdef __SWITCH__
+                const bool handheld = appletGetOperationMode() == AppletOperationMode_Handheld;   // (docked: no touch screen)
+#else
+                const bool handheld = true;
+#endif
+                if (handheld && cur && cur->gameplay && (cur->touchMask & 8)) {   // pause button next to -LIFE-
                     Mat m = stageToWindowFor(dw, dh); const float* r = cur->touchRects[3]; double x0, y0, x1, y1;
                     m.apply(r[0], r[1], x0, y0); m.apply(r[2], r[3], x1, y1);
                     renderPauseButton(x0, y0, x1, y1);

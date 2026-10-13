@@ -95,7 +95,8 @@ Created automatically next to the executable the first time you run it.
   game = wotl         last version played (og, wotl or eternal; the old key
                       "juego" is still accepted)
   performance = 0     1 = performance diagnostics always on (same as F3, see below)
-  touch_controls = 1  (Android only) 0 hides the on-screen joysticks
+  touch_controls = 1  (Android, Switch) 0 turns off the touch joysticks, HUD taps and the
+                      pause button (touch then only works in menus)
   render_height = 0   (Android only) rendering resolution, 0 = automatic (see ANDROID)
   joystick_acceleration = 1
                       analog movement: with a stick (touch, controller, Switch) the
@@ -177,8 +178,11 @@ CHANGES IN VERSION 11 (v1.2.0 public release numbering)
   controller, Switch) the speed follows how far you push it, like in Rebirth. Full
   speed is reached at 3/4 of the stick's travel and is never above the original.
   Keyboard and D-pad are unchanged.
-- Android: fixed crackling/buzzing audio on some devices (audio buffer too small in
-  low-latency mode).
+- Switch: in handheld mode the touch screen now works during play too: the same
+  floating joysticks and HUD taps as on Android, plus a pause button next to -LIFE-
+  (see README_SWITCH.txt). The .nro shows version 1.2.0.
+- Audio: sound is now mixed directly at the output device's sample rate with smoother
+  (cubic) interpolation, instead of being resampled twice. Cleaner high frequencies.
 
 CHANGES IN VERSION 10 (v1.1.0 public release numbering)
 -------------------------------------------------
