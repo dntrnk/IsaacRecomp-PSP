@@ -1,8 +1,9 @@
 // Touch controls for phones/tablets (Android). Main thread only.
-// In gameplay: two floating joysticks that appear where a finger lands (left half = move with WASD,
-// right half = shoot with the arrows) and taps on the HUD icons (bomb = E, active item = Space,
-// pill/card = Q). In menus: a finger acts as the mouse (the game's buttons respond to it); a tap on a
-// screen without buttons (cutscenes, "press space" screens) is turned into Space by the logic thread.
+// In gameplay: two joysticks that appear where a finger lands and stay there until it lifts (left half = move
+// with WASD, right half = shoot with the arrows) and taps on the HUD icons (bomb = E, active item = Space,
+// pill/card = Q, and our pause button next to -LIFE- = P). In menus: a finger acts as the mouse (the game's
+// buttons respond to it); a tap on a screen without buttons (cutscenes, "press space" screens) is turned into
+// Space by the logic thread.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -15,8 +16,8 @@ struct TouchCtx {
     bool gameplay = false, inGame = false;
     int winW = 0, winH = 0;          // drawable size (pixels)
     Mat stageToWin;                  // stage coordinates -> drawable pixels
-    int mask = 0;                    // HUD targets on screen (bit 0 bomb, 1 active item, 2 pill/card)
-    float rects[3][4] = {};          // their areas, stage coordinates
+    int mask = 0;                    // HUD targets on screen (bit 0 bomb, 1 active item, 2 pill/card, 3 pause button)
+    float rects[4][4] = {};          // their areas, stage coordinates
 };
 
 struct TouchSink {

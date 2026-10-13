@@ -12,6 +12,11 @@
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
+#ifdef __ANDROID__
+#include <sched.h>
+#include <unistd.h>
+#include <cstdio>
+#endif
 namespace fl {
 static const Limits kBig   = {400000, 192u << 20, 96u << 20, 160u << 20, 16, 48u << 20, 3, 768, 2.0, false};
 static const Limits kSmall = {150000, 128u << 20, 32u << 20,  48u << 20,  6, 24u << 20, 2, 160, 3.0, true};
@@ -35,6 +40,38 @@ void platformInitLimits() {
 #endif
 }
 
+#ifdef __ANDROID__
+// Phones mix fast ("big") and slow ("little") cores. Logic and rendering go on the fastest ones; rasterization
+// helpers on the rest, so they never take a big core away from the two threads that set the frame rate.
+namespace {
+struct CpuSets { int n = 0; cpu_set_t big, little; int nBig = 0, nLittle = 0; };
+const CpuSets& cpuSets() {
+    static CpuSets cs = [] {
+        CpuSets c; CPU_ZERO(&c.big); CPU_ZERO(&c.little);
+        int n = (int)sysconf(_SC_NPROCESSORS_CONF); if (n < 1) n = 1; if (n > 32) n = 32; c.n = n;
+        long freq[32] = {0}, top = 0;
+        for (int i = 0; i < n; i++) {
+            char p[96]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+            if (FILE* f = fopen(p, "r")) { if (fscanf(f, "%ld", &freq[i]) != 1) freq[i] = 0; fclose(f); }
+            top = std::max(top, freq[i]);
+        }
+        for (int i = 0; i < n; i++) {
+            if (top > 0 && freq[i] >= top * 0.9) { CPU_SET(i, &c.big); c.nBig++; } else { CPU_SET(i, &c.little); c.nLittle++; }
+        }
+        // a lone prime core (1+3+4 layouts) is not enough for two threads: take the next tier too
+        if (c.nBig == 1 && c.nLittle > 0) {
+            long second = 0; for (int i = 0; i < n; i++) if (freq[i] < top * 0.9) second = std::max(second, freq[i]);
+            for (int i = 0; i < n; i++) if (freq[i] < top * 0.9 && freq[i] >= second * 0.95) { CPU_SET(i, &c.big); CPU_CLR(i, &c.little); c.nBig++; c.nLittle--; }
+        }
+        if (c.nLittle == 0 || c.nBig == 0) { c.nBig = c.nLittle = 0; }   // all alike (or unreadable): no pinning
+        logf("cpus: %d (fast %d, other %d)\n", n, c.nBig, c.nLittle);
+        return c;
+    }();
+    return cs;
+}
+}
+#endif
+
 // Layout on Switch (the application has cores 0-2; priority: lower number = more urgent):
 //   core 0: render (main thread, 0x2C) and, below it, one render rasterizer and one logic rasterizer
 //   core 1: logic (0x2C), alone
@@ -44,6 +81,12 @@ void platformInitLimits() {
 int platformPoolWorkers(ThreadRole role) {
 #if defined(__SWITCH__)
     return role == ROLE_LOGIC ? 2 : 1;
+#elif defined(__ANDROID__)
+    (void)role;
+    const CpuSets& c = cpuSets();
+    if (c.nLittle) return std::max(1, std::min(c.nLittle - 1, 4));
+    unsigned hc = std::thread::hardware_concurrency();
+    return hc > 2 ? (int)std::min(hc - 2, 4u) : 1;
 #else
     (void)role;
     unsigned hc = std::thread::hardware_concurrency();
@@ -57,6 +100,11 @@ void platformPoolWorkerPlace(ThreadRole role, int i, int* core, int* prio) {
 int platformRasterServiceWorkers() {
 #if defined(__SWITCH__)
     return 2;
+#elif defined(__ANDROID__)
+    const CpuSets& c = cpuSets();
+    if (c.nLittle) return std::max(1, std::min(c.nLittle, 4));
+    unsigned hc = std::thread::hardware_concurrency();
+    return hc > 2 ? (int)std::min(hc - 2, 4u) : 1;
 #else
     unsigned hc = std::thread::hardware_concurrency();
     return hc > 1 ? (int)std::min(hc - 1, 4u) : 1;
@@ -67,6 +115,13 @@ void platformSetThread(int core, int prio) {
 #ifdef __SWITCH__
     if (core >= 0) svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
     if (prio >= 0) svcSetThreadPriority(CUR_THREAD_HANDLE, prio);
+#elif defined(__ANDROID__)
+    // (the Switch priorities double as roles: 0x2C = logic / render, anything else = helper)
+    (void)core;
+    const CpuSets& c = cpuSets();
+    if (!c.nBig) return;
+    cpu_set_t set = prio == 0x2C ? c.big : c.little;
+    sched_setaffinity(0, sizeof set, &set);
 #else
     (void)core; (void)prio;
 #endif

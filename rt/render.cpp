@@ -290,7 +290,13 @@ static inline void swizzleRow(uint32_t* d, const uint32_t* s, int n) {
     for (int i = 0; i < n; i++) { uint32_t v = s[i]; d[i] = (v & 0xff00ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16); }
 }
 // copies a rectangle of pixels (premultiplied BGRA) into an existing texture
+static void texUploadImpl(GLuint tex, int x, int y, int w, int h, const uint32_t* src, int stride);
 static void texUpload(GLuint tex, int x, int y, int w, int h, const uint32_t* src, int stride) {
+    Uint64 t0 = SDL_GetPerformanceCounter();
+    texUploadImpl(tex, x, y, w, h, src, stride);
+    g_rstats.uploadMs += (SDL_GetPerformanceCounter() - t0) * 1000.0 / SDL_GetPerformanceFrequency();
+}
+static void texUploadImpl(GLuint tex, int x, int y, int w, int h, const uint32_t* src, int stride) {
     if (w <= 0 || h <= 0) return;
     const GLenum fmt = g_glES ? GL_RGBA : GL_BGRA, typ = g_glES ? GL_UNSIGNED_BYTE : GL_UNSIGNED_INT_8_8_8_8_REV;
     size_t bytes = (size_t)w * h * 4;
@@ -942,7 +948,8 @@ static void execRange(size_t from, size_t to);
 // Filter cache: if the contents of a blur haven't changed (same pieces, same relative
 // positions, same color, same bitmap contents), the previous frame's result is reused
 // instead of redoing the blur (like cacheAsBitmap in Flash). Menus have about ten per frame.
-struct FCache { RT rt; uint64_t sig = 0; uint32_t lastFrame = 0; };
+struct FCache { RT rt; uint64_t sig = 0; uint32_t lastFrame = 0, computed = 0; int w = 0, h = 0; float ds = 1; };
+static int g_filterRecomputes = 0;   // this frame
 static std::unordered_map<uint64_t, FCache> g_fcache;
 static TexEntry* rasterFor(const Cmd& c);
 static uint64_t filterSig(size_t i, int x0, int y0, int w, int h, float ds, float bx, float by, int passes) {
@@ -984,7 +991,7 @@ static void execFilter(size_t i) {
     float bmax = std::max(bx, by);
     static bool flog = getenv("ISAAC_FILTERLOG") != nullptr;
     if (flog) logf("[filter] frame %u: %dx%d blur %.1fx%.1f passes %d\n", g_frameNo, w, h, bx, by, passes);
-    float ds = bmax >= 24 ? 0.25f : bmax >= 8 ? 0.5f : 1.f;
+    float ds = g_renderCfg.filterLowRes ? (bmax >= 12 ? 0.25f : bmax >= 4 ? 0.5f : 1.f) : bmax >= 24 ? 0.25f : bmax >= 8 ? 0.5f : 1.f;
     int fw = w, fh = h;                                      // full-scale size
     w = std::max(1, (int)std::ceil(fw * ds)); h = std::max(1, (int)std::ceil(fh * ds));
     bx *= ds; by *= ds;
@@ -993,13 +1000,20 @@ static void execFilter(size_t i) {
     uint64_t sig = filterSig(i, x0, y0, w, h, ds, bx, by, passes);
     {
         FCache& fc = g_fcache[key];
-        if (fc.rt.fbo && fc.sig == sig && fc.rt.w >= w && fc.rt.h >= h) {
+        bool same = fc.rt.fbo && fc.sig == sig && fc.rt.w >= w && fc.rt.h >= h;
+        // over this frame's budget: show the previous result if it is recent and about the same size
+        bool stale = !same && fc.rt.fbo && g_renderCfg.filterBudget > 0 && g_filterRecomputes >= g_renderCfg.filterBudget &&
+                     g_frameNo - fc.computed < (uint32_t)g_renderCfg.filterMaxAge && fc.ds == ds &&
+                     std::abs(fc.w - w) <= 2 + w / 16 && std::abs(fc.h - h) <= 2 + h / 16;
+        if (same || stale) {
             fc.lastFrame = g_frameNo; g_rstats.filterHits++;
-            Mat place; place.a = 1 / ds; place.d = -1 / ds; place.tx = x0; place.ty = y0 + h / ds;
-            quad(fc.rt.tex, place, 0, 0, w, h, CX(), 0, 0, (float)w / fc.rt.w, (float)h / fc.rt.h);
+            int cw = same ? w : fc.w, ch = same ? h : fc.h;
+            Mat place; place.a = 1 / ds; place.d = -1 / ds; place.tx = x0; place.ty = y0 + ch / ds;
+            quad(fc.rt.tex, place, 0, 0, cw, ch, CX(), 0, 0, (float)cw / fc.rt.w, (float)ch / fc.rt.h);
             flush();
             return;
         }
+        g_filterRecomputes++;
     }
     RT a = acquireRT(w, h), b = acquireRT(a.w, a.h, true);
     int RW = a.w, RH = a.h;
@@ -1042,7 +1056,7 @@ static void execFilter(size_t i) {
     // keep the result for the next frame (this entry's previous one goes back to the pool)
     FCache& fc = g_fcache[key];
     if (fc.rt.fbo) releaseRT(fc.rt);
-    fc.rt = a; fc.sig = sig; fc.lastFrame = g_frameNo;
+    fc.rt = a; fc.sig = sig; fc.lastFrame = g_frameNo; fc.computed = g_frameNo; fc.w = w; fc.h = h; fc.ds = ds;
     releaseRT(b);
 }
 static void trimFilterCache() {   // filters no longer being drawn
@@ -1343,6 +1357,41 @@ void renderOverlay(const std::vector<std::string>& lines) {
     g_batchTex = 0;
 }
 
+// ============================================================ small hint text (bottom-right corner)
+// e.g. "LOADING 45%" when the player touches the screen while graphics are still being preloaded.
+static GLuint g_hintTex = 0; static int g_hintTW = 0, g_hintTH = 0, g_hintW = 0, g_hintH = 0; static std::string g_hintKey;
+void renderHint(const std::string& text) {
+    if (text.empty()) return;
+    int px = std::max(2, (g_winH + 180) / 360);   // 3 px per dot at 1080p
+    std::string key = text + "|" + std::to_string(px);
+    if (key != g_hintKey || !g_hintTex) {
+        g_hintKey = key;
+        int cw = 6 * px, pad = 3 * px;
+        int W = 2 * pad + (int)text.size() * cw, H = 2 * pad + 7 * px;
+        std::vector<uint32_t> buf((size_t)W * H, 0x99000000u);   // 60% black (premultiplied)
+        const Glyph* table[128] = {};
+        for (auto& f : kFont) table[(unsigned char)f.c] = &f;
+        for (size_t ci = 0; ci < text.size(); ci++) {
+            unsigned char c = (unsigned char)toupper((unsigned char)text[ci]);
+            const Glyph* g = c < 128 ? table[c] : nullptr; if (!g) continue;
+            int x0 = pad + (int)ci * cw, y0 = pad;
+            for (int r = 0; r < 7; r++) for (int k = 0; k < 5; k++) if (g->r[r][k] == '#')
+                for (int yy = 0; yy < px; yy++) for (int xx = 0; xx < px; xx++) buf[(size_t)(y0 + r * px + yy) * W + x0 + k * px + xx] = 0xFFFFFFFFu;
+        }
+        if (W > g_hintTW || H > g_hintTH) {
+            if (g_hintTex) glDeleteTextures(1, &g_hintTex);
+            g_hintTW = std::max(W, g_hintTW); g_hintTH = std::max(H, g_hintTH); g_hintTex = newTexture(g_hintTW, g_hintTH);
+        }
+        texUpload(g_hintTex, 0, 0, W, H, buf.data(), W);
+        g_hintW = W; g_hintH = H;
+    }
+    if (g_hintTex != g_batchTex) { flush(); setSmooth(g_hintTex, false); g_batchTex = g_hintTex; }
+    Mat id; int m = std::max(8, g_winH / 40);
+    quad(g_hintTex, id, g_winW - m - g_hintW, g_winH - m - g_hintH, g_winW - m, g_winH - m, CX(), 0, 0, (float)g_hintW / g_hintTW, (float)g_hintH / g_hintTH);
+    flush();
+    g_batchTex = 0;
+}
+
 // ============================================================ touch joysticks (Android)
 // Two anti-aliased circles generated once (a ring for the base, a disc for the knob), drawn on top of the
 // frame in window pixels with a low alpha: discreet, and only while a finger is down.
@@ -1379,6 +1428,36 @@ void renderTouchSticks(const TouchStick* sticks, int n) {
         double kr = t.r * 0.45;
         quad(g_stickTex, id, t.kx - kr, t.ky - kr, t.kx + kr, t.ky + kr, knob, 0.5f, 0, 1, 1);
     }
+    flush();
+    g_batchTex = 0;
+}
+// pause button for touch screens (window pixels): rounded dark square with two bars
+static GLuint g_pauseTex = 0;
+void renderPauseButton(double x0, double y0, double x1, double y1) {
+    if (!g_pauseTex) {
+        const int S = 128; std::vector<uint32_t> buf((size_t)S * S, 0);
+        auto cov = [](double d) { return std::max(0.0, std::min(1.0, d + 0.5)); };   // signed distance -> coverage
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+            double px = x + 0.5, py = y + 0.5;
+            // rounded square (radius 26), 92% of the cell
+            double h = S * 0.46, rr = 26, qx = std::fabs(px - S / 2.0) - (h - rr), qy = std::fabs(py - S / 2.0) - (h - rr);
+            double box = -(std::hypot(std::max(qx, 0.0), std::max(qy, 0.0)) + std::min(std::max(qx, qy), 0.0) - rr);
+            // two bars 18 wide, 56 tall, 16 apart
+            auto bar = [&](double cx) { double bx = std::fabs(px - cx) - 9, by = std::fabs(py - S / 2.0) - 28; return -(std::max(bx, by)); };
+            double bars = std::max(bar(S / 2.0 - 17), bar(S / 2.0 + 17));
+            double a = cov(box) * 0.55, w = cov(bars);
+            double outA = w + a * (1 - w);                     // white bars over a 55% black square
+            uint32_t A = (uint32_t)(outA * 255 + 0.5), c = (uint32_t)(w * 255 + 0.5);
+            buf[(size_t)y * S + x] = A << 24 | c << 16 | c << 8 | c;
+        }
+        g_pauseTex = newTexture(S, S);
+        texUpload(g_pauseTex, 0, 0, S, S, buf.data(), S);
+        glBindTexture(GL_TEXTURE_2D, g_pauseTex); glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    }
+    if (g_pauseTex != g_batchTex) { flush(); g_batchTex = g_pauseTex; }
+    Mat id; CX cx; cx.am = 0.8f;
+    quad(g_pauseTex, id, x0, y0, x1, y1, cx);
     flush();
     g_batchTex = 0;
 }
@@ -1456,6 +1535,7 @@ Mat stageToWindowFor(int winW, int winH) {
     return stage;
 }
 void renderFrame(int winW, int winH, double alpha) {
+    g_filterRecomputes = 0;
     g_frameNo++; g_winW = winW; g_winH = winH;
     g_alpha = g_renderCfg.smooth ? std::max(0.0, std::min(1.35, alpha)) : 1.0;
     g_rasterBudget = g_renderCfg.rasterPerFrame;

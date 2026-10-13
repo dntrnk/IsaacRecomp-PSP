@@ -169,7 +169,7 @@ bool recompInGameplay(bool* inGame) {
 // coordinates, a little enlarged for fingers). Bit i of the result = target i is on screen. The three games share
 // the HUD layout: hud.cacher (coins / bombs / keys, one row each), hud.it ("SPACE" box) and hud.extra (only
 // visible while holding a pill or card).
-int recompTouchTargets(float out[3][4]) {
+int recompTouchTargets(float out[4][4]) {
     Value hud = getMemK(Value((Object*)vm.root), intern("hud"));
     if (!hud.isObj() || !hud.o->isDisplay() || !((DisplayObject*)hud.o)->visible) return 0;
     int mask = 0;
@@ -189,6 +189,13 @@ int recompTouchTargets(float out[3][4]) {
     }
     if (rect("it", false, r)) { out[1][0] = (float)(r.x0 - pad); out[1][1] = (float)(r.y0 - pad); out[1][2] = (float)(r.x1 + pad); out[1][3] = (float)(r.y1 + pad); mask |= 2; }
     if (rect("extra", true, r)) { out[2][0] = (float)(r.x0 - pad); out[2][1] = (float)(r.y0 - pad); out[2][2] = (float)(r.x1 + pad); out[2][3] = (float)(r.y1 + pad); mask |= 4; }
+    // pause button (drawn by the renderer, not part of the game): in the empty corner right of "-LIFE-",
+    // 28 units square in the game's 640x480 space, mapped through _root's matrix (HD scale and offset)
+    {
+        double rx0 = 588, ry0 = 4, rx1 = 616, ry1 = 32, x0, y0, x1, y1;
+        vm.root->m.apply(rx0, ry0, x0, y0); vm.root->m.apply(rx1, ry1, x1, y1);
+        out[3][0] = (float)x0; out[3][1] = (float)y0; out[3][2] = (float)x1; out[3][3] = (float)y1; mask |= 8;
+    }
     return mask;
 }
 // the player toggled fullscreen with F11 / Alt+Enter (logic thread)

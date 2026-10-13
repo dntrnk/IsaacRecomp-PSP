@@ -23,9 +23,9 @@ void TouchControls::press(int code, bool down) {
 // axis; the dominant one wins, with some hysteresis so it doesn't flicker on the diagonal).
 void TouchControls::steer(Stick& s, int which, double px, double py) {
     double dx = px - s.cx, dy = py - s.cy, d = std::hypot(dx, dy);
-    // floating base: dragging past the edge pulls the base along
-    if (d > s.r) { double k = (d - s.r) / d; s.cx += dx * k; s.cy += dy * k; dx = px - s.cx; dy = py - s.cy; d = s.r; }
-    s.kx = s.cx + dx; s.ky = s.cy + dy;
+    // the base stays where the finger first landed; the knob stops at its edge
+    double kd = std::min(d, s.r), k = d > 0 ? kd / d : 0;
+    s.kx = s.cx + dx * k; s.ky = s.cy + dy * k;
     int want[4] = {0, 0, 0, 0};   // left, up, right, down
     if (d > s.r * 0.22) {
         double ux = dx / d, uy = dy / d;
@@ -48,11 +48,12 @@ void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, do
     double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
     if (c.gameplay) {
         // HUD icons first
-        static const int kCodes[3] = {'E', 32, 'Q'};
-        for (int i = 0; i < 3; i++) {
+        static const int kCodes[4] = {'E', 32, 'Q', 'P'};
+        for (int i = 0; i < 4; i++) {
             if (!(c.mask & (1 << i))) continue;
             const float* r = c.rects[i];
-            if (sx >= r[0] && sx <= r[2] && sy >= r[1] && sy <= r[3]) {
+            float m = i == 3 ? (r[2] - r[0]) * 0.4f : 0;   // (the pause button is small: a more forgiving touch area)
+            if (sx >= r[0] - m && sx <= r[2] + m && sy >= r[1] - m && sy <= r[3] + m) {
                 for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[i]; h.since = now; h.up = false; press(h.code, true); return; }
                 return;
             }
@@ -61,9 +62,7 @@ void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, do
         Stick& s = st_[which];
         if (s.id != -1) return;   // that side already has a finger
         s.id = id; s.cx = s.kx = px; s.cy = s.ky = py;
-        s.r = std::max(48.0, std::min(260.0, std::min(c.winW, c.winH) * 0.12));
-        // don't let the base sit half off-screen
-        s.cx = std::max(s.r * 0.6, std::min(c.winW - s.r * 0.6, s.cx)); s.cy = std::max(s.r * 0.6, std::min(c.winH - s.r * 0.6, s.cy));
+        s.r = std::max(32.0, std::min(200.0, std::min(c.winW, c.winH) * 0.085));
         steer(s, which, px, py);
         return;
     }
