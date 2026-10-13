@@ -3,6 +3,7 @@
 //  - options menu without the options that depended on Zinc/Flash and do nothing here.
 #include "display.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <atomic>
@@ -50,6 +51,44 @@ Value mdmDeleteFile(Act&, Value, int argc, Value* argv) {
     return VUNDEF;
 }
 static bool g_fsSynced = false;
+
+// ---- analog movement ("joystick_acceleration"): the three games read movement in dirkey(false), which turns the
+// pressed keys into xenf/yenf = -1/0/+1; that value then accelerates the player. Our native wrapper calls the
+// original and scales xenf/yenf by g_moveScale (set by the input code from how far the stick is pushed): less push,
+// less acceleration and a lower top speed; 1 = exactly the original movement (keyboard, D-pad, stick fully out).
+std::atomic<float> g_moveScale{1.f};
+bool g_joyAccel = true;
+static Function* g_dirkeyOrig = nullptr;
+static Function* g_dirkeyWrap = nullptr;
+static Value dirkeyWrap(Act& a, Value thisv, int argc, Value* argv) {
+    Value r = g_dirkeyOrig ? callValue(a, Value((Object*)g_dirkeyOrig), thisv, argc, argv) : VUNDEF;
+    float k = g_moveScale.load();
+    if (k < 0.999f && !(argc > 0 && truthy(argv[0]))) {   // dirkey(false) = movement (true = shooting)
+        Value clip = getMemK(Value((Object*)vm.root), intern("a"));
+        if (clip.isObj()) {
+            static Str* sx = intern("xenf"); static Str* sy = intern("yenf");
+            Value x = getMemK(clip, sx), y = getMemK(clip, sy);
+            if (x.t == T_NUM && x.n != 0) setMemK(clip, sx, Value(x.n * k));
+            if (y.t == T_NUM && y.n != 0) setMemK(clip, sy, Value(y.n * k));
+        }
+    }
+    return r;
+}
+static void installMoveScale() {
+    if (!g_joyAccel) return;
+    static const char* test = getenv("ISAAC_MOVESCALE"); if (test) g_moveScale = (float)atof(test);   // (testing)
+    Value clip = getMemK(Value((Object*)vm.root), intern("a"));
+    if (!clip.isObj()) return;
+    static Str* name = intern("dirkey");
+    Value f = getMemK(clip, name);
+    if (!f.isObj() || f.o->kind != OK_FUNCTION || f.o == (Object*)g_dirkeyWrap) return;
+    if (!g_dirkeyWrap) {
+        g_dirkeyWrap = gcNew<Function>(); g_dirkeyWrap->proto = protos::function; g_dirkeyWrap->nat = dirkeyWrap; g_dirkeyWrap->dbgName = "dirkey (analog)"; gcPin(g_dirkeyWrap);
+        gcAddRoot((GcObj**)&g_dirkeyOrig);
+    }
+    g_dirkeyOrig = (Function*)f.o;
+    setMemK(clip, name, Value((Object*)g_dirkeyWrap));
+}
 Value mdmFull(Act&, Value, int argc, Value* argv) {
     // at startup the game applies its saved setting: isaac.ini's takes precedence (and is synced in recompPatchesTick)
     if (g_fsSynced) { g_fullscreenRequest = argc > 0 && truthy(argv[0]) ? 1 : 0; if (g_trace) logf("[mdm] showFullScreen(%d)\n", g_fullscreenRequest.load()); }
@@ -142,6 +181,7 @@ static void tweakOptions(MovieClip* p) {
 // every tick, after the logic
 void recompPatchesTick() {
     Value root((Object*)vm.root);
+    installMoveScale();
     if (!g_fsSynced && g_player.tick >= 2) {   // the menu's "FullScreen" checkbox reflects the actual state
         Value so = getMemK(root, intern("so"));
         Value data = so.isObj() ? getMemK(so, intern("data")) : VUNDEF;

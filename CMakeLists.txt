@@ -19,13 +19,16 @@ elseif(ANDROID)
     URL https://github.com/libsdl-org/SDL/releases/download/release-2.30.9/SDL2-2.30.9.tar.gz
     URL_HASH SHA256=24b574f71c87a763f50704bbb630cbe38298d544a1f890f099a4696b1d6beba4)
   FetchContent_MakeAvailable(SDL2)
-  # SDL 2.30's AAudio backend doesn't ask for the low-latency mode (Android then picks large buffers, a noticeable
-  # sound delay): load AAudioStreamBuilder_setPerformanceMode and call it before each stream is opened.
-  # (Patched here, after configuring and before compiling; idempotent.)
+  # SDL 2.30's AAudio backend (Android): ask for the low-latency mode (SDL doesn't; Android then picks large buffers,
+  # a noticeable sound delay), and make the stream's buffer hold at least two of SDL's blocks - in low-latency mode it
+  # can be smaller than one block, and SDL's blocking writes then underrun ("engine starting" noise on some tablets).
+  # Patched after configuring and before compiling; idempotent.
   set(_aa_funcs ${sdl2_SOURCE_DIR}/src/audio/aaudio/SDL_aaudiofuncs.h)
   set(_aa_src ${sdl2_SOURCE_DIR}/src/audio/aaudio/SDL_aaudio.c)
   file(READ ${_aa_funcs} _t)
-  string(REPLACE "SDL_PROC_UNUSED(void, AAudioStreamBuilder_setPerformanceMode" "SDL_PROC(void, AAudioStreamBuilder_setPerformanceMode" _t "${_t}")
+  foreach(_f AAudioStreamBuilder_setPerformanceMode AAudioStream_setBufferSizeInFrames AAudioStream_getBufferCapacityInFrames)
+    string(REGEX REPLACE "SDL_PROC_UNUSED\\(([^,]+), ${_f}," "SDL_PROC(\\1, ${_f}," _t "${_t}")
+  endforeach()
   file(WRITE ${_aa_funcs} "${_t}")
   file(READ ${_aa_src} _t)
   if(NOT _t MATCHES "PERFORMANCE_MODE_LOW_LATENCY")
@@ -33,6 +36,10 @@ elseif(ANDROID)
       "ctx.AAudioStreamBuilder_setErrorCallback(ctx.builder, aaudio_errorCallback, private);\n    ctx.AAudioStreamBuilder_setPerformanceMode(ctx.builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);" _t "${_t}")
     string(REPLACE "ctx.AAudioStreamBuilder_setErrorCallback(ctx.builder, aaudio_errorCallback, hidden);"
       "ctx.AAudioStreamBuilder_setErrorCallback(ctx.builder, aaudio_errorCallback, hidden);\n    ctx.AAudioStreamBuilder_setPerformanceMode(ctx.builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);" _t "${_t}")
+    string(REPLACE "    this->spec.freq = ctx.AAudioStream_getSampleRate(private->stream);"
+      "    { int32_t want = 2 * (int32_t)this->spec.samples, cap = ctx.AAudioStream_getBufferCapacityInFrames(private->stream); if (cap > 0 && want > cap) want = cap; ctx.AAudioStream_setBufferSizeInFrames(private->stream, want); }\n    this->spec.freq = ctx.AAudioStream_getSampleRate(private->stream);" _t "${_t}")
+    string(REPLACE "        /* We handle this better in SDL3"
+      "        { int32_t want = 2 * (int32_t)device->spec.samples, cap = ctx.AAudioStream_getBufferCapacityInFrames(hidden->stream); if (cap > 0 && want > cap) want = cap; ctx.AAudioStream_setBufferSizeInFrames(hidden->stream, want); }\n        /* We handle this better in SDL3" _t "${_t}")
     file(WRITE ${_aa_src} "${_t}")
   endif()
 else()

@@ -60,6 +60,14 @@ void renderPaceAfterSwap();
 bool renderPaceWait(uint64_t timeoutNs);
 int renderAtlasPages();
 extern float g_audioVolume;
+extern std::atomic<float> g_moveScale; extern bool g_joyAccel;
+}
+// joystick_acceleration: how far the stick is pushed (0..1) -> movement factor. Below the dead zone nothing moves;
+// just past it the player moves at 40% of its speed, rising linearly to 100% at 75% of the stick's travel.
+static float moveCurve(float m, float dead) {
+    if (m <= dead) return 0.f;
+    float t = (m - dead) / (0.75f - dead);
+    return 0.4f + 0.6f * std::max(0.f, std::min(1.f, t));
 }
 using namespace fl;
 
@@ -101,6 +109,7 @@ struct Config {
     bool touchControls = false;      // (PC: for testing, with a touch screen or mouse-generated touches)
 #endif
     bool performance = false;        // performance diagnostics on from the start (overlay + performance.txt)
+    bool joystickAcceleration = true;   // analog sticks / touch: movement speed follows how far the stick is pushed
     int renderHeight = 0;            // (Android) render resolution (height in pixels); 0 = automatic
     int autoHeight = 0;              // (Android) the resolution automatic mode settled on for this device (written by the game)
 };
@@ -122,6 +131,9 @@ static void loadConfig(const std::string& path, Config& c) {
              "interp_lead = 0\n"
              "; performance = 1 shows the performance diagnostics and writes them to performance.txt (same as F3)\n"
              "performance = 0\n"
+             "; joystick_acceleration = 1: with an analog stick (controller, Switch, touch joystick) the speed follows how far\n"
+             ";   it is pushed, for small precise moves (top speed unchanged); 0 = always full speed, as on the keyboard\n"
+             "joystick_acceleration = 1\n"
 #ifdef __ANDROID__
              "; touch_controls = 0 hides the on-screen joysticks (when playing with a controller only)\n"
              "touch_controls = 1\n"
@@ -141,6 +153,7 @@ static void loadConfig(const std::string& path, Config& c) {
         else if (k == "width") c.width = n; else if (k == "height") c.height = n; else if (k == "volume") c.volume = n;
         else if (k == "smooth") c.smooth = n; else if (k == "filters") c.filters = n; else if (k == "cache_mb") c.cacheMB = n; else if (k == "gpu_sync") c.gpuSync = n; else if (k == "low_latency") c.lowLatency = n; else if (k == "interp_lead") c.interpLead = std::max(0.0, std::min(0.5, atof(v.c_str())));
         else if (k == "performance") c.performance = n; else if (k == "touch_controls") c.touchControls = n;
+        else if (k == "joystick_acceleration") c.joystickAcceleration = n;
         else if (k == "render_height") c.renderHeight = n; else if (k == "auto_height") c.autoHeight = n;
     }
 #ifdef __SWITCH__
@@ -622,6 +635,7 @@ int main(int argc, char** argv) {
     std::string gsuf = gameTag == "wotl" ? "" : "_" + gameTag;
     if (g_savePath.empty()) g_savePath = pref + "isaac" + gsuf + "_save.sol";
     if (win) SDL_SetWindowTitle(win, (std::string("The Binding of Isaac") + (gameTag == "og" ? "" : std::string(": ") + g_code->title)).c_str());
+    g_joyAccel = cfg.joystickAcceleration;
     applyLoadPatches();
     logf("SWF loaded: v%d, %dx%d @ %.0f fps, recompiled stage %dx%d\n", g_movie.version, g_movie.width, g_movie.height, g_movie.frameRate, g_stageW, g_stageH);
     g_renderCfg.smooth = cfg.smooth; g_renderCfg.filters = cfg.filters; g_renderCfg.cacheMB = cfg.cacheMB;
@@ -846,6 +860,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         (void)logicBase;
+        float padMove = -1.f;   // analog movement from a controller's left stick (0..1, -1 = none)
 #ifdef __SWITCH__
         padConfigureInput(1, HidNpadStyleSet_NpadStandard);
         PadState pad; padInitializeDefault(&pad);
@@ -872,8 +887,34 @@ int main(int argc, char** argv) {
                 if (rUntil > 0 && now >= rUntil) { pushIn({0, 82, 0, false, 0, 0}); rUntil = -1; }
                 if (!zr && zrSince < 0 && rUntil < 0) {}
             }
+            // analog movement (joystick_acceleration): in gameplay the left stick is read as a vector (round dead zone,
+            // 8 directions) instead of libnx's digital stick "buttons", and its distance sets the speed
+            const bool analog = play && g_joyAccel;
+            {
+                static int held4[4] = {0, 0, 0, 0};
+                int want[4] = {0, 0, 0, 0};
+                padMove = -1.f;
+                if (analog) {
+                    HidAnalogStickState st = padGetStickPos(&pad, 0);
+                    float m = std::min(1.f, std::hypot((float)st.x, (float)st.y) / 32767.f);
+                    if (m > 0.2f) {
+                        float ux = st.x / 32767.f / m, uy = -st.y / 32767.f / m;   // (libnx: y up)
+                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                        padMove = m;
+                    }
+                }
+                static const int kGame[4] = {'A', 'W', 'D', 'S'};
+                for (int k = 0; k < 4; k++) {
+                    int code = want[k] ? kGame[k] : 0;
+                    if (held4[k] == code) continue;
+                    if (held4[k] && --keyRefs[held4[k]] == 0) pushIn({0, held4[k], 0, false, 0, 0});
+                    if (code && keyRefs[code]++ == 0) pushIn({0, code, 0, true, 0, 0});
+                    held4[k] = code;
+                }
+            }
             for (size_t i = 0; i < sizeof(kPadMap) / sizeof(kPadMap[0]); i++) {
-                bool down = (b & kPadMap[i].btn) != 0;
+                const u64 stickL = HidNpadButton_StickLLeft | HidNpadButton_StickLRight | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
+                bool down = (b & kPadMap[i].btn) != 0 && !(analog && (kPadMap[i].btn & stickL));
                 if (down && !padHeld[i]) {
                     int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
                     if (!k) continue;
@@ -1047,11 +1088,26 @@ int main(int argc, char** argv) {
                         // left stick: WASD in gameplay, arrows in menus (the arrows/WASD of the other mode are released)
                         switch (e.caxis.axis) {
                             case SDL_CONTROLLER_AXIS_LEFTX: case SDL_CONTROLLER_AXIS_LEFTY: {
-                                static int lk[2][2] = {{0, 0}, {0, 0}};   // key held by the left stick, per axis and direction
-                                int ax = e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ? 0 : 1;
-                                int neg = ax == 0 ? (play ? 'A' : 37) : (play ? 'W' : 38), pos = ax == 0 ? (play ? 'D' : 39) : (play ? 'S' : 40);
-                                int want[2] = {v < -dead ? neg : 0, v > dead ? pos : 0};
-                                for (int k = 0; k < 2; k++) if (lk[ax][k] != want[k]) { if (lk[ax][k]) pk(lk[ax][k], false); if (want[k]) pk(want[k], true); lk[ax][k] = want[k]; }
+                                static int lx = 0, ly = 0, held[4] = {0, 0, 0, 0};   // stick position; key held per direction (L U R D)
+                                (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ? lx : ly) = v;
+                                int want[4] = {0, 0, 0, 0};
+                                if (play && g_joyAccel) {
+                                    // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
+                                    float m = std::min(1.f, std::hypot((float)lx, (float)ly) / 32767.f);
+                                    if (m > 0.2f) {
+                                        float ux = lx / 32767.f / m, uy = ly / 32767.f / m;
+                                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                                    }
+                                    padMove = m > 0.2f ? m : -1.f;
+                                } else {
+                                    want[0] = lx < -dead; want[2] = lx > dead; want[1] = ly < -dead; want[3] = ly > dead;
+                                    padMove = -1.f;
+                                }
+                                static const int kGame[4] = {'A', 'W', 'D', 'S'}, kMenu[4] = {37, 38, 39, 40};
+                                for (int k = 0; k < 4; k++) {
+                                    int code = want[k] ? (play ? kGame[k] : kMenu[k]) : 0;
+                                    if (held[k] != code) { if (held[k]) pk(held[k], false); if (code) pk(code, true); held[k] = code; }
+                                }
                                 break;
                             }
                             case SDL_CONTROLLER_AXIS_RIGHTX: pk(37, v < -dead); pk(39, v > dead); break;
@@ -1098,6 +1154,11 @@ int main(int argc, char** argv) {
                 else if (j.op == "quit") running = false;
             }
             if (touchUI) touch.update(touchCtx(), nowSec());
+            {   // movement factor for the logic thread (joystick_acceleration): touch stick, else controller stick, else full
+                float tm = touchUI ? touch.moveAmount() : -1.f;
+                float k = !g_joyAccel ? 1.f : tm >= 0 ? moveCurve(tm, TouchControls::deadZone()) : padMove >= 0 ? moveCurve(padMove, 0.2f) : 1.f;
+                g_moveScale = k > 0 ? k : 1.f;
+            }
             double fstart = nowSec();
             if (fstart - lastRefreshCheck > 1.0) {   // the monitor may change (window moved)
                 lastRefreshCheck = fstart;

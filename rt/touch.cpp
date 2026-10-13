@@ -5,7 +5,8 @@
 
 namespace fl {
 
-static const double kMinHold = 0.09;   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
+static const double kMinHold = 0.09;
+static const double kDead = 0.18;      // dead zone (fraction of the radius)   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
 
 bool TouchControls::toStage(const TouchCtx& c, double px, double py, double& sx, double& sy) {
     Mat inv; if (!c.stageToWin.invert(inv)) return false;
@@ -27,7 +28,8 @@ void TouchControls::steer(Stick& s, int which, double px, double py) {
     double kd = std::min(d, s.r), k = d > 0 ? kd / d : 0;
     s.kx = s.cx + dx * k; s.ky = s.cy + dy * k;
     int want[4] = {0, 0, 0, 0};   // left, up, right, down
-    if (d > s.r * 0.22) {
+    s.mag = (float)(kd / s.r);
+    if (d > s.r * kDead) {
         double ux = dx / d, uy = dy / d;
         if (which == 0) {
             const double t = 0.383;   // sin 22.5 deg: 8 sectors
@@ -112,6 +114,12 @@ void TouchControls::update(const TouchCtx& c, double now) {
     if (c.gameplay != lastPlay_) { releaseAll(now); lastPlay_ = c.gameplay; }   // (pause, death, room transition to a menu...)
     for (auto& h : hold_) if (h.code && h.up && now - h.since >= kMinHold) { press(h.code, false); h = Hold(); }
 }
+
+float TouchControls::moveAmount() const {
+    const Stick& s = st_[0];
+    return s.id == -1 || s.mag <= kDead ? -1.f : s.mag;
+}
+float TouchControls::deadZone() { return (float)kDead; }
 
 int TouchControls::sticks(TouchStick out[2]) const {
     int n = 0;

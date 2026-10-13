@@ -35,8 +35,10 @@ public:
     void update(const TouchCtx& c, double now);   // every frame: timed releases, mode changes
     void releaseAll(double now);
     int sticks(TouchStick out[2]) const;          // what to draw
+    float moveAmount() const;                     // movement stick: how far it is pushed (0..1), -1 = not moving
+    static float deadZone();
 private:
-    struct Stick { int64_t id = -1; double cx = 0, cy = 0, kx = 0, ky = 0, r = 0; int keys[4] = {0, 0, 0, 0}; };
+    struct Stick { int64_t id = -1; double cx = 0, cy = 0, kx = 0, ky = 0, r = 0; float mag = 0; int keys[4] = {0, 0, 0, 0}; };
     struct Hold { int64_t id = -1; int code = 0; double since = 0; bool up = false; };
     TouchSink out_;
     Stick st_[2];                 // 0 = move (left), 1 = shoot (right)

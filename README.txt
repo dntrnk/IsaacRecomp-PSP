@@ -97,6 +97,11 @@ Created automatically next to the executable the first time you run it.
   performance = 0     1 = performance diagnostics always on (same as F3, see below)
   touch_controls = 1  (Android only) 0 hides the on-screen joysticks
   render_height = 0   (Android only) rendering resolution, 0 = automatic (see ANDROID)
+  joystick_acceleration = 1
+                      analog movement: with a stick (touch, controller, Switch) the
+                      speed depends on how far you push it, from 40% just past the
+                      dead zone to full speed at 3/4 of the way (never faster than the
+                      original). 0 = always full speed, as in the original game
 
 IF YOU NOTICE STUTTERING OR SLOWDOWNS: F3
 -----------------------------------------
@@ -131,7 +136,8 @@ or newer and OpenGL ES 3.0.
    live in that folder.
 Touch controls: put a finger on the left half of the screen to move and on the right
 half to shoot; a joystick appears where the finger lands, stays there while you slide
-it, and disappears when you lift it. Tap the bomb counter to drop a bomb, the "SPACE"
+it, and disappears when you lift it (how far you push the left one sets your speed, see
+joystick_acceleration). Tap the bomb counter to drop a bomb, the "SPACE"
 box to use the active item and the pill/card (top right, when you have one) to use it.
 The pause button sits right of "-LIFE-"; the back button/gesture also pauses (and goes
 back in menus). In menus, tap the options; on screens without options (cutscenes,
@@ -167,6 +173,12 @@ CHANGES IN VERSION 11 (v1.2.0 public release numbering)
 - Controllers: menus and the pause screen can now be used with the controller alone
   (A confirms, B goes back, D-pad/left stick choose), as on Switch. Start/Back pause.
 - New isaac.ini option: performance = 1 turns the performance diagnostics on at startup.
+- Analog movement (joystick_acceleration = 1, on by default): with a stick (touch,
+  controller, Switch) the speed follows how far you push it, like in Rebirth. Full
+  speed is reached at 3/4 of the stick's travel and is never above the original.
+  Keyboard and D-pad are unchanged.
+- Android: fixed crackling/buzzing audio on some devices (audio buffer too small in
+  low-latency mode).
 
 CHANGES IN VERSION 10 (v1.1.0 public release numbering)
 -------------------------------------------------

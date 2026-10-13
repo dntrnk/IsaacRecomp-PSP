@@ -208,7 +208,7 @@
   thread frozen (`logicPaused`) until foreground.
 - Touch (`rt/touch.cpp`, `TouchControls`, main thread): in gameplay (snapshot `gameplay`) a finger on the left half
   spawns the movement stick (WASD, 8 sectors), on the right half the shooting stick (arrows, dominant axis with
-  hysteresis); floating base; dead zone 22%. HUD targets come from the logic thread each tick
+  hysteresis); floating base; dead zone 18%. HUD targets come from the logic thread each tick
   (`recompTouchTargets`: `hud.cacher` middle row = bombs/E, `hud.it` = Space, `hud.extra` when visible = Q; same
   layout in the three games) and win over the sticks. Keys are held at least 90 ms (game polls at 30 Hz).
   Menus: the finger is the mouse; a short tap also sends an InputEv type 4: the logic thread presses Space for 3
@@ -251,3 +251,17 @@
   input (same frame rate). Texture uploads go straight from memory on Android (the PBO path stalled: 0.2 MB/s cost
   up to 100 ms/s). Audio: 512-sample buffer on Android, and CMake patches SDL 2.30's AAudio backend to request
   `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` (SDL leaves that call unused; without it Android picks large buffers).
+- Fourth device test (a 120 Hz tablet). Audio sometimes started as a rough "motor" buzz that went away when another
+  app opened an audio stream (screen recording): continuous underruns. With LOW_LATENCY the AAudio stream's buffer
+  size defaults to one burst, smaller than SDL's 512-frame write. The CMake patch now also enables
+  `AAudioStream_setBufferSizeInFrames`/`getBufferCapacityInFrames` and sets the buffer to 2x the SDL block after
+  open/reopen (capped by the capacity). Input lag: render 1-3 ms, many HELD frames at 120 Hz; what remains is the
+  30 Hz game tick plus interpolation (up to ~1 tick); `interp_lead` trades part of it for slight overshoot.
+- Analog movement (`joystick_acceleration`, default 1; all platforms with a stick): the game only knows 8 digital
+  directions, so a native wrapper around `_root.a.dirkey` (installed by `installMoveScale`, re-wrapped if the game
+  redefines it) scales the player's `xenf`/`yenf` by `g_moveScale` after the original runs. The main thread sets
+  `g_moveScale` from the movement stick each frame: `moveCurve` = 0 inside the dead zone (touch 18%, controller
+  20%), then 40% rising linearly to 100% at 75% of the stick's travel, never above the original speed. Keyboard,
+  D-pad and `joystick_acceleration = 0` keep scale 1 (headless runs and determinism unaffected). Switch: in
+  gameplay the left stick position is read directly (`padGetStickPos`) instead of the digital StickL buttons.
+  Measured: scale 1 / 0.7 / 0.4 = 211 / 148 / 85 px/s.
