@@ -1,4 +1,4 @@
-// OpenGL 3.3 renderer over display-list snapshots: interpolation at the display refresh
+// OpenGL 3.3 / OpenGL ES 3.0 renderer over display-list snapshots: interpolation at the display refresh
 // rate, atlas of rasterized textures, asynchronous uploads (PBO), stencil masks and blur.
 #include "render.h"
 #include <array>
@@ -8,6 +8,8 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <unordered_map>
+#include <string>
+#include <vector>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -28,6 +30,7 @@ typedef void (APIENTRY *PFNGLTEXIMAGE2DPROC)(GLenum, GLint, GLint, GLsizei, GLsi
 typedef void (APIENTRY *PFNGLTEXSUBIMAGE2DPROC)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*);
 typedef void (APIENTRY *PFNGLTEXPARAMETERIPROC)(GLenum, GLenum, GLint);
 typedef void (APIENTRY *PFNGLPIXELSTOREIPROC)(GLenum, GLint);
+typedef const GLubyte* (APIENTRY *PFNGLGETSTRINGPROC_)(GLenum);
 typedef void (APIENTRY *PFNGLDRAWARRAYSPROC)(GLenum, GLint, GLsizei);
 typedef void (APIENTRY *PFNGLENABLEPROC)(GLenum);
 typedef void (APIENTRY *PFNGLDISABLEPROC)(GLenum);
@@ -66,7 +69,7 @@ typedef void (APIENTRY *PFNGLREADPIXELSPROC)(GLint, GLint, GLsizei, GLsizei, GLe
     X(PFNGLGENRENDERBUFFERSPROC, GenRenderbuffers) X(PFNGLBINDRENDERBUFFERPROC, BindRenderbuffer) X(PFNGLRENDERBUFFERSTORAGEPROC, RenderbufferStorage) \
     X(PFNGLFRAMEBUFFERRENDERBUFFERPROC, FramebufferRenderbuffer) X(PFNGLUNIFORM3FPROC, Uniform3f) X(PFNGLMAPBUFFERRANGEPROC, MapBufferRange) X(PFNGLUNMAPBUFFERPROC, UnmapBuffer) X(PFNGLISENABLEDPROC, IsEnabled) \
     X(PFNGLDELETEFRAMEBUFFERSPROC, DeleteFramebuffers) X(PFNGLDELETERENDERBUFFERSPROC, DeleteRenderbuffers) X(PFNGLGETERRORPROC, GetError) X(PFNGLREADPIXELSPROC, ReadPixels) X(PFNGLFINISHPROC, Finish) \
-    X(PFNGLFENCESYNCPROC, FenceSync) X(PFNGLCLIENTWAITSYNCPROC, ClientWaitSync) X(PFNGLDELETESYNCPROC, DeleteSync)
+    X(PFNGLFENCESYNCPROC, FenceSync) X(PFNGLCLIENTWAITSYNCPROC, ClientWaitSync) X(PFNGLDELETESYNCPROC, DeleteSync) X(PFNGLGETSTRINGPROC_, GetString)
 #define DECL(T, N) static T p_gl##N;
 GLFUNCS(DECL)
 #undef DECL
@@ -137,6 +140,7 @@ GLFUNCS(DECL)
 #define glFenceSync p_glFenceSync
 #define glClientWaitSync p_glClientWaitSync
 #define glDeleteSync p_glDeleteSync
+#define glGetString p_glGetString
 static bool loadGL() {
     bool ok = true;
 #define LOAD(T, N) p_gl##N = (T)SDL_GL_GetProcAddress("gl" #N); if (!p_gl##N) { logf("GL: missing gl" #N "\n"); ok = false; }
@@ -243,7 +247,12 @@ void main() {
 }
 )";
 
-static GLuint compile(GLenum type, const char* src) {
+// OpenGL ES 3.0 (Android): same shaders with an ES header instead of "#version 330 core"
+bool g_glES = false;
+static GLuint compile(GLenum type, const char* src0) {
+    std::string tmp = src0;
+    if (g_glES && tmp.compare(0, 17, "#version 330 core") == 0) tmp = "#version 300 es\nprecision highp float;\nprecision highp int;" + tmp.substr(17);
+    const char* src = tmp.c_str();
     GLuint s = glCreateShader(type); glShaderSource(s, 1, &src, nullptr); glCompileShader(s);
     GLint ok; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) { char log[2048]; glGetShaderInfoLog(s, sizeof log, nullptr, log); logf("shader: %s\n", log); }
@@ -265,7 +274,8 @@ static GLuint newTexture(int w, int h) {
     GLuint t; glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
     // On Switch, unsized internal format: mesa then picks the same byte order as the data (BGRA) and
     // the upload is a direct copy, with no per-pixel conversion
-    glTexImage2D(GL_TEXTURE_2D, 0, kIsSwitch ? GL_RGBA : GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+    if (g_glES) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);   // (ES: no BGRA)
+    else glTexImage2D(GL_TEXTURE_2D, 0, kIsSwitch ? GL_RGBA : GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -274,9 +284,15 @@ static GLuint newTexture(int w, int h) {
     g_texSmoothSet(t);
     return t;
 }
+// OpenGL ES has no BGRA upload format: the pixels (0xAARRGGBB words, B G R A in memory) are converted to
+// R G B A bytes while copying them (into the PBO or a scratch buffer). Same cost as the plain copy.
+static inline void swizzleRow(uint32_t* d, const uint32_t* s, int n) {
+    for (int i = 0; i < n; i++) { uint32_t v = s[i]; d[i] = (v & 0xff00ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16); }
+}
 // copies a rectangle of pixels (premultiplied BGRA) into an existing texture
 static void texUpload(GLuint tex, int x, int y, int w, int h, const uint32_t* src, int stride) {
     if (w <= 0 || h <= 0) return;
+    const GLenum fmt = g_glES ? GL_RGBA : GL_BGRA, typ = g_glES ? GL_UNSIGNED_BYTE : GL_UNSIGNED_INT_8_8_8_8_REV;
     size_t bytes = (size_t)w * h * 4;
     glBindTexture(GL_TEXTURE_2D, tex);
     g_rstats.uploadMB += bytes / 1048576.0;
@@ -288,17 +304,24 @@ static void texUpload(GLuint tex, int x, int y, int w, int h, const uint32_t* sr
     if (off != SIZE_MAX) {
         void* dst = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, off, bytes, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
         if (dst) {
-            if (stride == w) memcpy(dst, src, bytes);
+            if (g_glES) for (int r = 0; r < h; r++) swizzleRow((uint32_t*)dst + (size_t)r * w, src + (size_t)r * stride, w);
+            else if (stride == w) memcpy(dst, src, bytes);
             else for (int r = 0; r < h; r++) memcpy((char*)dst + (size_t)r * w * 4, src + (size_t)r * stride, (size_t)w * 4);
             glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, (const void*)(uintptr_t)off);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, fmt, typ, (const void*)(uintptr_t)off);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             return;
         }
     }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    if (g_glES) {
+        static std::vector<uint32_t> tmp; tmp.resize((size_t)w * h);
+        for (int r = 0; r < h; r++) swizzleRow(tmp.data() + (size_t)r * w, src + (size_t)r * stride, w);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, fmt, typ, tmp.data());
+        return;
+    }
     glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, src);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, fmt, typ, src);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
 
@@ -394,6 +417,7 @@ static void releaseBm(const BmTex& t0) {
 
 bool renderInit() {
     if (!loadGL()) return false;
+    logf("OpenGL: %s | %s\n", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
     g_prog = link(kVS, kFS); g_progBlur = link(kVS, kBlurFS);
     u_tex = glGetUniformLocation(g_prog, "uTex"); u_alphaTest = glGetUniformLocation(g_prog, "uAlphaTest"); u_view = glGetUniformLocation(g_prog, "uView");
     ub_tex = glGetUniformLocation(g_progBlur, "uTex"); ub_dir = glGetUniformLocation(g_progBlur, "uDir"); ub_view = glGetUniformLocation(g_progBlur, "uView");
@@ -490,7 +514,7 @@ static void quad(GLuint tex, const Mat& m, double x0, double y0, double x1, doub
 }
 static GLuint whiteTex() {
     static GLuint w = 0;
-    if (!w) { uint32_t px = 0xffffffffu; w = newTexture(1, 1); glBindTexture(GL_TEXTURE_2D, w); glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, &px); }
+    if (!w) { uint32_t px = 0xffffffffu; w = newTexture(1, 1); glBindTexture(GL_TEXTURE_2D, w); glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, g_glES ? GL_RGBA : GL_BGRA, g_glES ? GL_UNSIGNED_BYTE : GL_UNSIGNED_INT_8_8_8_8_REV, &px); }
     return w;
 }
 
@@ -1315,6 +1339,46 @@ void renderOverlay(const std::vector<std::string>& lines) {
     if (g_ovTex != g_batchTex) { flush(); setSmooth(g_ovTex, false); g_batchTex = g_ovTex; }
     Mat id;
     quad(g_ovTex, id, 8, 8, 8 + g_ovW, 8 + g_ovH, CX(), 0, 0, (float)g_ovW / g_ovTW, (float)g_ovH / g_ovTH);
+    flush();
+    g_batchTex = 0;
+}
+
+// ============================================================ touch joysticks (Android)
+// Two anti-aliased circles generated once (a ring for the base, a disc for the knob), drawn on top of the
+// frame in window pixels with a low alpha: discreet, and only while a finger is down.
+static GLuint g_stickTex = 0;
+void renderTouchSticks(const TouchStick* sticks, int n) {
+    if (!g_stickTex) {
+        const int S = 256; std::vector<uint32_t> buf((size_t)S * 2 * S, 0);
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+            double dx = x + 0.5 - S / 2.0, dy = y + 0.5 - S / 2.0, r = std::sqrt(dx * dx + dy * dy), R = S / 2.0 - 2;
+            auto put = [&](int col, double a, uint32_t rgb) {
+                a = std::max(0.0, std::min(1.0, a)); uint32_t A = (uint32_t)(a * 255 + 0.5);
+                uint32_t rr = ((rgb >> 16) & 255) * A / 255, gg = ((rgb >> 8) & 255) * A / 255, bb = (rgb & 255) * A / 255;
+                buf[(size_t)y * 2 * S + col * S + x] = A << 24 | rr << 16 | gg << 8 | bb;
+            };
+            // base: thick ring with a faint fill
+            double ring = std::min(r - (R - 10), R - r) + 0.5, edge = R - r + 0.5;
+            put(0, std::max(std::min(1.0, ring), 0.0) * 0.9 + std::max(0.0, std::min(1.0, edge)) * 0.25 * (r < R - 10), 0xFFFFFF);
+            // knob: solid disc
+            put(1, R - r + 0.5, 0xFFFFFF);
+        }
+        g_stickTex = newTexture(2 * S, S);
+        texUpload(g_stickTex, 0, 0, 2 * S, S, buf.data(), 2 * S);
+        glBindTexture(GL_TEXTURE_2D, g_stickTex); glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    }
+    bool any = false; for (int i = 0; i < n; i++) any |= sticks[i].active;
+    if (!any) return;
+    if (g_stickTex != g_batchTex) { flush(); g_batchTex = g_stickTex; }
+    Mat id;
+    for (int i = 0; i < n; i++) {
+        const TouchStick& t = sticks[i]; if (!t.active) continue;
+        CX base; base.am = 0.30f; CX knob; knob.am = 0.40f;
+        quad(g_stickTex, id, t.cx - t.r, t.cy - t.r, t.cx + t.r, t.cy + t.r, base, 0, 0, 0.5f, 1);
+        double kr = t.r * 0.45;
+        quad(g_stickTex, id, t.kx - kr, t.ky - kr, t.kx + kr, t.ky + kr, knob, 0.5f, 0, 1, 1);
+    }
     flush();
     g_batchTex = 0;
 }

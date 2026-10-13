@@ -22,6 +22,12 @@ void platformInitLimits() {
     g_lim = total >= 1500 ? kBig : kSmall;
     if (!g_lim.small) g_lim.pboBytes = 32u << 20;   // (application mode: ~3 GB; atlas as on PC: the preload fits)
     g_lim.gcSweepMs = 3.0;
+#elif defined(__ANDROID__)
+    // phones share RAM with the GPU and the system kills apps that use too much: atlas like the Switch's
+    // application mode (the preload needs ~25 pages of 16 MB), smaller upload ring
+    g_lim = kBig;
+    g_lim.defaultCacheMB = 512;
+    g_lim.pboBytes = 32u << 20;
 #elif defined(FL_SWITCH_MEMORY)
     g_lim = kSmall;
 #else

@@ -193,3 +193,29 @@
   thread.
 - Diagnostics: `ISAAC_GCHIST=1` (garbage by type at each collection), `ISAAC_STRPROF=1` (dynamic strings created, by
   pattern), `--stats` prints the total GC time.
+
+## Android (v1.2)
+- Same program built as `libmain.so` (SDL 2.30.9's Java activity, fetched by CMake from GitHub) with `gen720/`;
+  arm64-v8a, minSdk 24. Gradle project in `android/`; `.github/workflows/android.yml` builds the APK in CI (Google's
+  SDK hosts are not reachable from the development sandbox). See `android/README.md`.
+- Renderer: `g_glES` → `#version 300 es` shaders and RGBA8 textures. ES has no BGRA upload format, so `texUpload`
+  swaps R/B while copying into the PBO (same cost as the memcpy). Output is pixel-identical to desktop GL (max
+  difference 2/255 on Mesa). `ISAAC_GLES=1` tests it on PC.
+- Data: `/storage/emulated/0/IsaacRecomp/` (from `IsaacActivity.rootDir()` via JNI) holds Isaac.exe, isaac.ini,
+  saves, log.txt, performance.txt. Needs MANAGE_EXTERNAL_STORAGE (Android 11+) / storage permission (older): native
+  `main` waits (pumping events) until `hasStorageAccess()`. Process is `exit(0)`ed at the end (Android may reuse it).
+  "Delete save" restarts through `RestartActivity` (separate process). Background: P pressed if playing, logic
+  thread frozen (`logicPaused`) until foreground.
+- Touch (`rt/touch.cpp`, `TouchControls`, main thread): in gameplay (snapshot `gameplay`) a finger on the left half
+  spawns the movement stick (WASD, 8 sectors), on the right half the shooting stick (arrows, dominant axis with
+  hysteresis); floating base; dead zone 22%. HUD targets come from the logic thread each tick
+  (`recompTouchTargets`: `hud.cacher` middle row = bombs/E, `hud.it` = Space, `hud.extra` when visible = Q; same
+  layout in the three games) and win over the sticks. Keys are held at least 90 ms (game polls at 30 Hz).
+  Menus: the finger is the mouse; a short tap also sends an InputEv type 4: the logic thread presses Space for 3
+  ticks if there is no button under it and no button on screen (`touchButtonAt` / `touchAnyButton`) - skips cutscenes,
+  title cards. Back key: P in game (pause/unpause), Esc in menus (title: the game's quit dialog).
+- Controllers (all SDL platforms): context-aware mapping like Switch (gameplay / pause / menu): A confirms and B goes
+  back in menus; Start/Back pause in game.
+- Testing on PC: `ISAAC_TOUCH=1`, `ISAAC_TOUCH_INJECT=file` (synthetic touches/back/eval/screenshots in the threaded
+  loop), `ISAAC_INPUT_LOG=1`. Under Xvfb without an audio device the opening cutscene can end by itself early; from
+  there the title's Start did not react once (not seen when the intro is skipped with a tap).

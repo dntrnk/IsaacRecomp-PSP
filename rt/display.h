@@ -157,6 +157,9 @@ int frameFromValue(MovieClip* c, const Value& v, MovieClip** target);
 bool hitTestPoint(DisplayObject* d, double gx, double gy, bool shapeFlag);
 Mat worldMatrix(DisplayObject* d);
 RectF localBounds(DisplayObject* d);   // in the object's parent space (includes its matrix)
+RectF stageBounds(DisplayObject* d);   // in stage coordinates
+bool touchButtonAt(double x, double y);   // (touch screens) a button under this stage point
+bool touchAnyButton();                    // (touch screens) any enabled, visible button on screen
 void keyEvent(int flashCode, int ascii, bool down);
 void mouseEvent(double x, double y, int type);   // 0 move, 1 down, 2 up
 void updateBoundTexts();

@@ -165,6 +165,32 @@ bool recompInGameplay(bool* inGame) {
     if (inGame) *inGame = g;
     return g && truthy(getMemK(a, intern("unpause")));
 }
+// Touch screens: where the HUD shows the bomb counter, the active item and the pill/card (stage
+// coordinates, a little enlarged for fingers). Bit i of the result = target i is on screen. The three games share
+// the HUD layout: hud.cacher (coins / bombs / keys, one row each), hud.it ("SPACE" box) and hud.extra (only
+// visible while holding a pill or card).
+int recompTouchTargets(float out[3][4]) {
+    Value hud = getMemK(Value((Object*)vm.root), intern("hud"));
+    if (!hud.isObj() || !hud.o->isDisplay() || !((DisplayObject*)hud.o)->visible) return 0;
+    int mask = 0;
+    auto rect = [&](const char* name, bool needVisible, RectF& r) {
+        Value v = getMemK(hud, intern(name));
+        if (!v.isObj() || !v.o->isDisplay()) return false;
+        DisplayObject* d = (DisplayObject*)v.o;
+        if (needVisible && !d->visible) return false;
+        r = stageBounds(d);
+        return r.valid();
+    };
+    RectF r; double pad = g_stageW / 120.0;   // (~1% of the stage width)
+    if (rect("cacher", false, r)) {   // middle row; the count text sits to the right of the icon
+        double h = (r.y1 - r.y0) / 3, w = r.x1 - r.x0;
+        out[0][0] = (float)(r.x0 - pad); out[0][1] = (float)(r.y0 + h - pad * 0.3);
+        out[0][2] = (float)(r.x0 + w * 2.8 + pad); out[0][3] = (float)(r.y0 + 2 * h + pad * 0.3); mask |= 1;
+    }
+    if (rect("it", false, r)) { out[1][0] = (float)(r.x0 - pad); out[1][1] = (float)(r.y0 - pad); out[1][2] = (float)(r.x1 + pad); out[1][3] = (float)(r.y1 + pad); mask |= 2; }
+    if (rect("extra", true, r)) { out[2][0] = (float)(r.x0 - pad); out[2][1] = (float)(r.y0 - pad); out[2][2] = (float)(r.x1 + pad); out[2][3] = (float)(r.y1 + pad); mask |= 4; }
+    return mask;
+}
 // the player toggled fullscreen with F11 / Alt+Enter (logic thread)
 void recompFullscreenChanged(bool full) {
     Value root((Object*)vm.root);

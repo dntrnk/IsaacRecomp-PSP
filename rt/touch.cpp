@@ -1,0 +1,128 @@
+// Touch controls (see touch.h).
+#include "touch.h"
+#include <algorithm>
+#include <cmath>
+
+namespace fl {
+
+static const double kMinHold = 0.09;   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
+
+bool TouchControls::toStage(const TouchCtx& c, double px, double py, double& sx, double& sy) {
+    Mat inv; if (!c.stageToWin.invert(inv)) return false;
+    inv.apply(px, py, sx, sy);
+    return true;
+}
+
+void TouchControls::press(int code, bool down) {
+    if (code <= 0 || code >= 256) return;
+    if (down) { if (keyRef_[code]++ == 0) out_.key(code, true); }
+    else if (keyRef_[code] > 0 && --keyRef_[code] == 0) out_.key(code, false);
+}
+
+// joystick direction -> keys. Movement: 8 directions (WASD). Shooting: 4 directions (the game shoots along one
+// axis; the dominant one wins, with some hysteresis so it doesn't flicker on the diagonal).
+void TouchControls::steer(Stick& s, int which, double px, double py) {
+    double dx = px - s.cx, dy = py - s.cy, d = std::hypot(dx, dy);
+    // floating base: dragging past the edge pulls the base along
+    if (d > s.r) { double k = (d - s.r) / d; s.cx += dx * k; s.cy += dy * k; dx = px - s.cx; dy = py - s.cy; d = s.r; }
+    s.kx = s.cx + dx; s.ky = s.cy + dy;
+    int want[4] = {0, 0, 0, 0};   // left, up, right, down
+    if (d > s.r * 0.22) {
+        double ux = dx / d, uy = dy / d;
+        if (which == 0) {
+            const double t = 0.383;   // sin 22.5 deg: 8 sectors
+            want[0] = ux < -t; want[2] = ux > t; want[1] = uy < -t; want[3] = uy > t;
+        } else {
+            bool wasX = s.keys[0] || s.keys[2], wasY = s.keys[1] || s.keys[3];
+            double bias = 1.15;
+            bool horiz = wasX ? std::fabs(ux) * bias >= std::fabs(uy) : wasY ? std::fabs(ux) > std::fabs(uy) * bias : std::fabs(ux) >= std::fabs(uy);
+            if (horiz) { want[0] = ux < 0; want[2] = ux > 0; } else { want[1] = uy < 0; want[3] = uy > 0; }
+        }
+    }
+    static const int kMove[4] = {'A', 'W', 'D', 'S'}, kShoot[4] = {37, 38, 39, 40};
+    const int* codes = which == 0 ? kMove : kShoot;
+    for (int i = 0; i < 4; i++) if (want[i] != s.keys[i]) { s.keys[i] = want[i]; press(codes[i], want[i] != 0); }
+}
+
+void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, double now) {
+    double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
+    if (c.gameplay) {
+        // HUD icons first
+        static const int kCodes[3] = {'E', 32, 'Q'};
+        for (int i = 0; i < 3; i++) {
+            if (!(c.mask & (1 << i))) continue;
+            const float* r = c.rects[i];
+            if (sx >= r[0] && sx <= r[2] && sy >= r[1] && sy <= r[3]) {
+                for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[i]; h.since = now; h.up = false; press(h.code, true); return; }
+                return;
+            }
+        }
+        int which = px < c.winW * 0.5 ? 0 : 1;
+        Stick& s = st_[which];
+        if (s.id != -1) return;   // that side already has a finger
+        s.id = id; s.cx = s.kx = px; s.cy = s.ky = py;
+        s.r = std::max(48.0, std::min(260.0, std::min(c.winW, c.winH) * 0.12));
+        // don't let the base sit half off-screen
+        s.cx = std::max(s.r * 0.6, std::min(c.winW - s.r * 0.6, s.cx)); s.cy = std::max(s.r * 0.6, std::min(c.winH - s.r * 0.6, s.cy));
+        steer(s, which, px, py);
+        return;
+    }
+    if (menuId_ != -1) return;   // menus: one finger = the mouse
+    menuId_ = id; menuX0_ = px; menuY0_ = py; menuT0_ = now; menuMoved_ = false;
+    out_.mouse(0, sx, sy); out_.mouse(1, sx, sy);
+}
+
+void TouchControls::move(int64_t id, double px, double py, const TouchCtx& c, double now) {
+    (void)now;
+    for (int w = 0; w < 2; w++) if (st_[w].id == id) { steer(st_[w], w, px, py); return; }
+    if (id == menuId_) {
+        double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
+        if (std::hypot(px - menuX0_, py - menuY0_) > std::min(c.winW, c.winH) * 0.03) menuMoved_ = true;
+        out_.mouse(0, sx, sy);
+    }
+}
+
+void TouchControls::up(int64_t id, double px, double py, const TouchCtx& c, double now) {
+    for (int w = 0; w < 2; w++) if (st_[w].id == id) {
+        Stick& s = st_[w];
+        static const int kMove[4] = {'A', 'W', 'D', 'S'}, kShoot[4] = {37, 38, 39, 40};
+        for (int i = 0; i < 4; i++) if (s.keys[i]) { s.keys[i] = 0; press(w == 0 ? kMove[i] : kShoot[i], false); }
+        s.id = -1; return;
+    }
+    for (auto& h : hold_) if (h.id == id && h.code) { h.up = true; h.id = -2; update(c, now); return; }
+    if (id == menuId_) {
+        menuId_ = -1;
+        double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
+        out_.mouse(0, sx, sy); out_.mouse(2, sx, sy);
+        if (!menuMoved_ && now - menuT0_ < 0.6) out_.tap(sx, sy);
+    }
+}
+
+void TouchControls::releaseAll(double now) {
+    (void)now;
+    static const int kMove[4] = {'A', 'W', 'D', 'S'}, kShoot[4] = {37, 38, 39, 40};
+    for (int w = 0; w < 2; w++) {
+        for (int i = 0; i < 4; i++) if (st_[w].keys[i]) { st_[w].keys[i] = 0; press(w == 0 ? kMove[i] : kShoot[i], false); }
+        st_[w].id = -1;
+    }
+    for (auto& h : hold_) if (h.code) { press(h.code, false); h = Hold(); }
+    menuId_ = -1;
+}
+
+void TouchControls::update(const TouchCtx& c, double now) {
+    if (c.gameplay != lastPlay_) { releaseAll(now); lastPlay_ = c.gameplay; }   // (pause, death, room transition to a menu...)
+    for (auto& h : hold_) if (h.code && h.up && now - h.since >= kMinHold) { press(h.code, false); h = Hold(); }
+}
+
+int TouchControls::sticks(TouchStick out[2]) const {
+    int n = 0;
+    for (int w = 0; w < 2; w++) {
+        out[w] = TouchStick();
+        if (st_[w].id == -1) continue;
+        out[w].active = true; out[w].cx = st_[w].cx; out[w].cy = st_[w].cy; out[w].r = st_[w].r; out[w].kx = st_[w].kx; out[w].ky = st_[w].ky;
+        n++;
+    }
+    return n;
+}
+
+}  // namespace fl

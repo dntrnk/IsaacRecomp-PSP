@@ -716,6 +716,7 @@ static void boundsInto(DisplayObject* d, const Mat& m, RectF& r) {
     }
 }
 RectF localBounds(DisplayObject* d) { RectF r; boundsInto(d, d->m, r); return r; }
+RectF stageBounds(DisplayObject* d) { RectF r; boundsInto(d, worldMatrix(d), r); return r; }
 
 // ============================================================ hitTest
 static bool pointInPolys(const std::vector<std::vector<float>>& polys, double x, double y) {
@@ -851,6 +852,13 @@ static ButtonObj* buttonAt(double x, double y) {
     return nullptr;
 }
 
+// touch screens (logic thread): is there a button under this stage point / is any button on screen at all?
+bool touchButtonAt(double x, double y) { return buttonAt(x, y) != nullptr; }
+bool touchAnyButton() {
+    std::vector<ButtonObj*> bs; collectButtons(vm.root, bs, true);
+    for (auto* b : bs) if (b->enabled && !b->removed) return true;
+    return false;
+}
 void mouseEvent(double x, double y, int type) {
     g_player.mouseX = x; g_player.mouseY = y;
     ButtonObj* over = buttonAt(x, y);

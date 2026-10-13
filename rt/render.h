@@ -26,6 +26,8 @@ extern Mat g_stageToWindow;
 bool renderInit();
 // adopts a new snapshot (applies its pixel uploads); the previous one becomes the interpolation source
 void renderAdopt(const SnapPtr& s);
+// OpenGL ES 3.0 instead of desktop OpenGL 3.3 (set before renderInit; Android, or ISAAC_GLES=1 for testing)
+extern bool g_glES;
 // with a logic thread (g_retireSnapshots = true) replaced snapshots are freed by it, calling renderFreeRetired()
 extern bool g_retireSnapshots;
 void renderFreeRetired();
@@ -35,6 +37,9 @@ void renderFrame(int winW, int winH, double alpha);
 Mat stageToWindowFor(int winW, int winH);
 bool renderScreenshot(const char* path);
 void renderOverlay(const std::vector<std::string>& lines);
+// touch joysticks drawn over the frame (window pixels): base centre/radius and knob position
+struct TouchStick { bool active = false; double cx = 0, cy = 0, r = 0, kx = 0, ky = 0; };
+void renderTouchSticks(const TouchStick* sticks, int n);
 // game selection screen when several are available (rects: area of each option, for mouse and touch)
 void renderChooser(int winW, int winH, const std::string& title, const std::vector<std::string>& items, int sel,
                    const std::string& hint, std::vector<std::array<int, 4>>* rects);
