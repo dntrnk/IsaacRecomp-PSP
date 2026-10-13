@@ -33,6 +33,11 @@ constexpr bool kIsSwitch = true;
 #else
 constexpr bool kIsSwitch = false;
 #endif
+#if defined(__ANDROID__)
+constexpr bool kIsAndroid = true;
+#else
+constexpr bool kIsAndroid = false;
+#endif
 
 // pins the current thread to a core (Switch only, where all threads start on core 0)
 void platformPinThread(int core);

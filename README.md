@@ -5,6 +5,7 @@
 <p align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-64--bit-8c1610?style=for-the-badge">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-64--bit-8c1610?style=for-the-badge">
+  <img alt="Android" src="https://img.shields.io/badge/Android-7.0+-8c1610?style=for-the-badge">
   <img alt="Nintendo Switch homebrew" src="https://img.shields.io/badge/Switch-homebrew-8c1610?style=for-the-badge">
   <img alt="60 fps" src="https://img.shields.io/badge/60_fps-1080p-28180f?style=for-the-badge">
   <img alt="Requires the original game" src="https://img.shields.io/badge/requires-the_Steam_game-e8dcc8?style=for-the-badge&labelColor=28180f">
@@ -12,7 +13,8 @@
 
 <p align="center">
   <b>The Binding of Isaac (Flash), rebuilt as a native program.</b><br>
-  No Flash Player, no emulator: the same game you know, at 60 fps and in high resolution.
+  No Flash Player, no emulator: the same game you know, at 60 fps and in high resolution,<br>
+  on PC, Android and Nintendo Switch.
 </p>
 
 > [!IMPORTANT]
@@ -32,7 +34,7 @@ old player that runs at 30 fps, in a small window, with the performance limits o
 
 This project **translates all of the game's original code into C++** and runs it on a modern, native engine
 written from scratch. Graphics, sounds and music are **read from your own Steam `Isaac.exe`** at startup, so you
-need the original game. What changes is *how* it runs:
+need the original game. What changes is *how* it runs, and *where*:
 
 |                       | Original Flash                   | Recomp                                              |
 |-----------------------|----------------------------------|-----------------------------------------------------|
@@ -40,9 +42,23 @@ need the original game. What changes is *how* it runs:
 | Resolution            | 800×600, upscaled                | **Native** (1080p, 1440p, 4K…)                      |
 | Game logic            | 30 Hz                            | Exactly 30 Hz: same speed, physics and patterns     |
 | Performance           | Can stutter with many enemies    | Smooth, with drawing spread across CPU cores        |
-| Controllers           | Needed JoyToKey                  | **Supported out of the box** (XInput / SDL)         |
+| Controllers           | Needed JoyToKey                  | **Supported out of the box**, with analog movement  |
 | Versions              | One per install                  | **Original, Wrath of the Lamb and Eternal Edition** in one program |
-| Platforms             | Windows / Mac                    | **Windows, Linux and Nintendo Switch (homebrew)**   |
+| Platforms             | Windows / Mac                    | **Windows, Linux, Android and Nintendo Switch (homebrew)** |
+
+## 📥 Downloads
+
+Everything is on the **[Releases](../../releases)** page. Pick the package for your device:
+
+| Platform                  | File                          | Guide                                            |
+|---------------------------|-------------------------------|--------------------------------------------------|
+| Windows (64-bit)          | `IsaacRecomp_Win64.zip`       | [Installation (PC)](#-installation-pc)           |
+| Linux (64-bit)            | `IsaacRecomp_Linux64.tar.gz`  | [Installation (PC)](#-installation-pc)           |
+| Android (phone or tablet) | `IsaacRecomp.apk`             | [Android](#-android)                             |
+| Nintendo Switch           | `IsaacRecomp_Switch.zip`      | [Nintendo Switch](#-nintendo-switch-homebrew)    |
+
+On every platform you also need the game's `Isaac.exe` from your Steam copy (see
+[Get the original game](#1-get-the-original-game)).
 
 ## 🕹️ Comparisons
 
@@ -86,12 +102,15 @@ at startup. Each version keeps its own save file.
 - **Native 1080p / 4K**, with no thin white seams between colored areas (shapes are rasterized the way Flash does it).
 - **No pop-in**: graphics are prepared in the background while the opening cutscene plays.
 - **Smooth room transitions**, with no sudden jumps after a hiccup.
-- **Controller support** without external tools.
+- **Controller support** without external tools. Menus and the pause screen work with the controller alone.
+- **Analog movement**: with a stick, Isaac's speed follows how far you push it, like in *Rebirth* (it can be
+  turned off).
+- **Touch controls** on Android and on Switch in handheld mode: floating joysticks, tappable HUD and a pause button.
+- **Low input latency**: input keeps being read while the program waits for the display.
 - **Cleaned-up options menu**: options that depended on Flash and no longer do anything are gone.
 - **Fullscreen or windowed** (F11 or Alt+Enter), fitted to your desktop's usable area.
 - **Built-in performance overlay** (F3).
 - **Original, Wrath of the Lamb and Eternal Edition** in a single program.
-- **Nintendo Switch homebrew port** with touch screen support in menus.
 
 ## 📦 Installation (PC)
 
@@ -128,10 +147,72 @@ Go to **[Releases](../../releases)** and grab the package for your system:
 
 **Requirements:** 64-bit Windows or Linux, and a graphics card that supports OpenGL 3.3.
 
+## 🎮 PC controls
+
+The original controls, plus controller support. Controller buttons adapt to whether you are playing, paused or in
+a menu:
+
+| Action               | Keyboard              | Controller (in game)          | Controller (menus / pause)      |
+|----------------------|-----------------------|-------------------------------|---------------------------------|
+| Move                 | `W` `A` `S` `D`       | Left stick (analog) / D-pad   | Choose: left stick / D-pad      |
+| Shoot                | Arrow keys            | Right stick / A B X Y         | —                               |
+| Bomb                 | `E` / `Shift`         | LB / left trigger             | —                               |
+| Active item          | `Space`               | RB / right trigger            | —                               |
+| Card / pill          | `Q`                   | Right stick click             | —                               |
+| Pause                | `P` / `Esc`           | Start / Back / left stick click | Start / Back (resume)         |
+| Confirm / back       | Mouse                 | —                             | A / B                           |
+| Fullscreen           | `F11` / `Alt+Enter`   | —                             | —                               |
+| Screenshot           | `F12`                 | —                             | —                               |
+| Performance overlay  | `F3`                  | —                             | —                               |
+
+## 📱 Android
+
+The same native recomp, packaged as an APK. It runs the game on the 960×720 stage used on Switch, rendered with
+OpenGL ES 3.0 and scaled to fill the screen.
+
+**You need:**
+
+- A 64-bit ARM phone or tablet (practically every device since 2017) with **Android 7.0 or newer** and OpenGL ES 3.0.
+- Your `Isaac.exe` from your Steam copy of the game (see step 1 of the PC installation).
+
+**Installation:**
+
+1. Download `IsaacRecomp.apk` from **[Releases](../../releases)** and install it. Android will ask you to allow
+   "install unknown apps" for your browser or file manager.
+2. Create a folder called **`IsaacRecomp`** at the root of the internal storage (next to `Download`, `DCIM`…) and copy
+   `Isaac.exe` into it. Several versions work as on PC (different names, a menu to choose).
+3. Open **Isaac Recomp**. The first time, it asks for *All files access* (Android 11 and newer) or for access to
+   your files: the game, `isaac.ini`, the saves and `log.txt` all live in that folder.
+
+**Touch controls:**
+
+| Action               | Touch                                                                       |
+|----------------------|-----------------------------------------------------------------------------|
+| Move                 | Finger on the **left** half: a joystick appears where it lands (analog)     |
+| Shoot                | Finger on the **right** half: a second joystick                             |
+| Bomb                 | Tap the bomb counter                                                        |
+| Active item          | Tap the "SPACE" box                                                         |
+| Card / pill          | Tap it (top right, when you have one)                                       |
+| Pause                | The button next to **-LIFE-**, or the back button / gesture                 |
+| Menus                | Tap the options; on screens without options (cutscenes, title cards) a tap continues |
+
+The joysticks are semi-transparent, stay where your finger first landed and disappear when you lift it.
+**Bluetooth and USB controllers** work exactly as on PC, and can be mixed with touch at any time.
+
+**Performance:** the program renders at 720 lines and, if the device can't keep 60 fps during play, steps down to
+600, 540 or 480 by itself (remembered in `isaac.ini`). It runs at the screen's refresh rate (90 or 120 Hz screens
+included), with the logic and rendering pinned to the fastest CPU cores, and audio mixed at the device's own rate
+through Android's low-latency audio path. To choose the resolution yourself, set `render_height` in `isaac.ini`.
+
+> [!NOTE]
+> While the game is still loading its graphics (the first seconds, during the opening cutscene) touches are
+> ignored; touching shows the progress. Saves are written when the app goes to the background, and the run is
+> paused automatically.
+
 ## 🎮 Nintendo Switch (homebrew)
 
-The same native recomp, built as a homebrew application (`.nro`). It contains no code or assets from Nintendo or
-from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
+The same native recomp, built as a homebrew application (`.nro`, version 1.2.0). It contains no code or assets from
+Nintendo or from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
 
 **You need:**
 
@@ -158,46 +239,41 @@ on its own CPU core, and new graphics are prepared in the background on another 
 
 | Action                   | Button                                    |
 |--------------------------|-------------------------------------------|
-| Move                     | Left stick / D-pad                        |
+| Move                     | Left stick (analog) / D-pad               |
 | Shoot                    | Right stick, or A / B / X / Y (→ ↓ ↑ ←)   |
 | Bomb                     | L                                         |
 | Active item              | ZL                                        |
 | Card / pill              | R                                         |
 | Restart the current run  | Hold ZR for 5 seconds                     |
 | Pause                    | + or −                                    |
-| Menus                    | Stick / D-pad, A to accept, B to go back, or **touch the screen** |
+| Menus                    | Stick / D-pad, A to accept, B to go back  |
 | Performance overlay      | L3 + R3                                   |
 
-## 🎮 PC controls
-
-The original controls, plus controller support:
-
-| Action               | Keyboard              | Controller                    |
-|----------------------|-----------------------|-------------------------------|
-| Move                 | `W` `A` `S` `D`       | Left stick / D-pad            |
-| Shoot                | Arrow keys            | Right stick / A B X Y         |
-| Bomb                 | `E` / `Shift`         | LB / left trigger             |
-| Active item          | `Space`               | RB / right trigger            |
-| Card / pill          | `Q`                   | Right stick click             |
-| Pause                | `P` / `Esc`           | Left stick click              |
-| Fullscreen           | `F11` / `Alt+Enter`   | —                             |
-| Screenshot           | `F12`                 | —                             |
-| Performance overlay  | `F3`                  | —                             |
+**Touch screen (handheld mode):** the same touch controls as on [Android](#-android): joysticks on the left and
+right halves of the screen, taps on the bomb counter, active item and card/pill, a pause button next to **-LIFE-**,
+and taps in menus. The pause button is only shown in handheld mode.
 
 ## ⚙️ Configuration
 
-`isaac.ini` is created next to the program on first launch (on Switch: `sd:/switch/isaac/isaac.ini`).
+`isaac.ini` is created on first launch next to the program (Android: in the `IsaacRecomp` folder; Switch:
+`sd:/switch/isaac/isaac.ini`).
 
-| Option        | Default  | What it does                                                    |
-|---------------|----------|-----------------------------------------------------------------|
-| `swf`         | (empty)  | Path to `Isaac.exe`, if it isn't next to the program            |
-| `juego`       | (empty)  | Last chosen version: `og`, `wotl` or `eternal`                  |
-| `fullscreen`  | `1`      | Borderless fullscreen                                           |
-| `vsync`       | `1`      | Vertical sync                                                   |
-| `smooth`      | `1`      | Interpolation to the display refresh rate (`0` = original 30 fps) |
-| `filters`     | `1`      | Blur effects in cutscenes                                       |
-| `volume`      | `100`    | Master volume (0-100)                                           |
-| `low_latency` | `1`      | Switch: keep at most one frame queued on the GPU (less input lag) |
+| Option                  | Default  | What it does                                                    |
+|-------------------------|----------|-----------------------------------------------------------------|
+| `swf`                   | (empty)  | Path to `Isaac.exe`, if it isn't next to the program            |
+| `game`                  | (empty)  | Last chosen version: `og`, `wotl` or `eternal`                  |
+| `fullscreen`            | `1`      | Borderless fullscreen (PC)                                      |
+| `vsync`                 | `1`      | Vertical sync                                                   |
+| `smooth`                | `1`      | Interpolation to the display refresh rate (`0` = original 30 fps) |
+| `filters`               | `1`      | Blur effects in cutscenes                                       |
+| `volume`                | `100`    | Master volume (0-100)                                           |
+| `cache_mb`              | depends  | Video memory for already rasterized graphics                    |
+| `low_latency`           | `1`      | Keep reading input while waiting for the display (less input lag) |
+| `interp_lead`           | `0`      | Experimental, up to `0.5`: draw slightly ahead for less visual delay (small overshoot when stopping) |
+| `performance`           | `0`      | `1` = performance overlay always on, written to `performance.txt` |
+| `joystick_acceleration` | `1`      | Analog movement: speed follows how far the stick is pushed (full speed at ¾ of its travel). `0` = always full speed |
+| `touch_controls`        | `1`      | Android / Switch: `0` turns off the touch joysticks, HUD taps and pause button |
+| `render_height`         | `0`      | Android: rendering resolution (`0` = automatic; `1080`, `720`, `600`, `540`, `480`) |
 
 **Save files:**
 
@@ -205,9 +281,11 @@ The original controls, plus controller support:
 |----------|-----------------------------------------------|
 | Windows  | `%APPDATA%\IsaacRecomp\WrathOfTheLamb\`       |
 | Linux    | `~/.local/share/IsaacRecomp/WrathOfTheLamb/`  |
+| Android  | The `IsaacRecomp` folder in the internal storage |
 | Switch   | `sd:/switch/isaac/`                           |
 
-There is one save file per version, and the format is the same everywhere, so you can copy saves between PC and Switch.
+There is one save file per version (`isaac_og_save.sol`, `isaac_save.sol`, `isaac_eternal_save.sol`), and the
+format is the same everywhere, so you can copy saves between PC, Android and Switch.
 
 ## ❓ FAQ
 
@@ -221,21 +299,39 @@ runs as a native program.
 <details>
 <summary><b>Can I use my saves from the Steam version?</b></summary>
 
-No. Flash stores unlocks in a different format and location, so the recomp starts from scratch.
+No. Flash stores unlocks in a different format and location, so the recomp starts from scratch. Saves made by the
+recomp, however, can be copied freely between PC, Android and Switch.
 </details>
 
 <details>
 <summary><b>Does it change the difficulty or game speed?</b></summary>
 
 No. The logic runs at exactly 30 ticks per second, just like the original: same physics, same fire rates and
-same enemy patterns. The 60 fps are purely visual.
+same enemy patterns. The 60 fps are purely visual. Analog movement only lets you move *slower* than the original
+when the stick is barely pushed; top speed is unchanged, and `joystick_acceleration = 0` turns it off.
 </details>
 
 <details>
-<summary><b>It stutters or runs slowly on my machine. What can I do?</b></summary>
+<summary><b>Android: where do I put the game? It says it can't find it.</b></summary>
 
-Press `F3` in game (L3 + R3 on Switch). The performance overlay appears and a `rendimiento.txt` file is written
-to the save folder. Open an issue and attach that file: it shows exactly which part is taking the time.
+In a folder called `IsaacRecomp` at the root of the internal storage (the same level as `Download` or `DCIM`),
+not inside `Download`. Also check that the app has *All files access* in Android's settings. `log.txt` in that
+folder says where it looked.
+</details>
+
+<details>
+<summary><b>Android: the update won't install over the previous version.</b></summary>
+
+If the new APK was signed with a different key, Android refuses to update it. Uninstall the old app first: saves
+and settings are kept, because they live in the `IsaacRecomp` folder, not inside the app.
+</details>
+
+<details>
+<summary><b>It stutters or runs slowly on my device. What can I do?</b></summary>
+
+Press `F3` in game (L3 + R3 on Switch; on Android, set `performance = 1` in `isaac.ini`). The performance overlay
+appears and a `performance.txt` file is written to the save folder. Open an issue and attach that file: it shows
+exactly which part is taking the time.
 </details>
 
 <details>
@@ -260,6 +356,7 @@ You can also open an **[issue](../../issues)** for bugs and suggestions.
   support the original creators.
 - The Switch version is homebrew software. It contains no code or assets belonging to Nintendo, and it does not
   include or facilitate anything to bypass the console's protections.
+- The Android version is distributed only as an APK on this page; it is not published on any app store.
 - This is a **free, non-profit** fan project with no affiliation to Edmund McMillen, Florian Himsl, Nicalis, Valve
   or Nintendo. *The Binding of Isaac* is © Edmund McMillen and Florian Himsl. All trademarks belong to their
   respective owners.
@@ -283,8 +380,8 @@ flowchart LR
     B -->|FFDec: root script| C["HD patch<br/>(patchhd.py)"]
     C --> D["Patched SWF"]
     D -->|tools/gen.py| E["Generated C++<br/>(one namespace per game)"]
-    E --> F["isaac / IsaacRecomp.exe / isaac.nro"]
-    G["Native engine<br/>(rt/: SDL2 + OpenGL 3.3)"] --> F
+    E --> F["isaac / IsaacRecomp.exe / isaac.nro / IsaacRecomp.apk"]
+    G["Native engine<br/>(rt/: SDL2 + OpenGL 3.3 / ES 3.0)"] --> F
     A -.->|at runtime:<br/>graphics, sounds, music| F
 ```
 
@@ -304,6 +401,8 @@ flowchart LR
 - **Three games, one executable.** Each version is generated into its own `namespace` (`fl::og`, `fl::wotl`,
   `fl::eternal`) with its own script tables. At load time, the version is identified by the SWF's CRC-32 and its
   code is bound in.
+- **Two stage sizes.** PC uses a 1440×1080 stage; Switch and Android use a 960×720 one (`gen720/`) to save
+  memory on the game's bitmaps.
 
 ## Reading the game from `Isaac.exe`
 
@@ -318,7 +417,7 @@ header. The decrypted SWF is **byte-for-byte identical** to the original.
   list every tick. The renderer draws at the display's refresh rate, interpolating between the last two
   snapshots. Scale and rotation are interpolated separately, and jumps are detected so they aren't smeared.
 - **Vector rasterization** with [PlutoVG](https://github.com/sammycage/plutovg), spread across CPU cores and
-  packed into a 2048² texture atlas, with uploads through a ring of PBOs.
+  packed into a 2048² texture atlas.
 - **No antialiasing seams.** Flash rasterizes each shape in one pass, but painting each fill separately lets the
   background bleed through shared edges. A *saturate* operator was added to PlutoVG that paints front to back
   with `dst += src · min(coverage, 1 − dst.a)`.
@@ -327,10 +426,20 @@ header. The decrypted SWF is **byte-for-byte identical** to the original.
   come back to the CPU if the code reads them.
 - **Asynchronous preloading** during the opening cutscene, from a per-game built-in list that grows with what
   each player sees.
-- **Mark-and-sweep garbage collector** with a time-budgeted sweep, so it never causes hitches.
+- **Mark-and-sweep garbage collector** with a time-budgeted, incremental sweep, so it never makes a tick miss
+  its deadline.
+- **Analog movement.** The game only knows eight digital directions. A native wrapper around its movement
+  routine scales the player's acceleration by how far the stick is pushed (dead zone, then 40 % → 100 % at ¾ of the
+  stick's travel), so top speed and the game's physics stay untouched.
+- **Audio** is mixed at the output device's own sample rate with cubic interpolation, so there is a single
+  resampling step.
 - **Nintendo Switch.** Logic, rendering and rasterization are pinned to separate cores with tuned thread
   priorities, because Horizon doesn't time-slice threads of equal priority. Frame pacing uses GPU fences so
   that no more than one frame is queued.
+- **Android.** Built as a native library started by SDL's Java activity. The OpenGL ES 3.0 renderer produces the
+  same image as the desktop one. Resolution adjusts automatically to keep 60 fps; logic and rendering run on
+  the big CPU cores; blur effects have a per-frame budget for mobile GPUs; and audio uses AAudio in low-latency
+  mode.
 
 ## Testing
 
@@ -339,6 +448,8 @@ header. The decrypted SWF is **byte-for-byte identical** to the original.
 - **Regression:** the same seed produces the same logic sequence across engine versions, and screenshots are
   compared pixel by pixel.
 - **Stability:** tens of thousands of ticks of random input on all three versions, with no failures.
+- **Mobile code on PC:** the OpenGL ES renderer (`ISAAC_GLES=1`) and the touch controls (`ISAAC_TOUCH=1`, plus
+  scripted synthetic touches) can be exercised on a desktop build.
 
 ## Building from source
 
@@ -353,13 +464,18 @@ cmake -G Ninja -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw64.cmake \
 # Nintendo Switch (devkitPro: devkitA64 + libnx + switch-sdl2 + switch-mesa)
 export DEVKITPRO=/opt/devkitpro
 cmake -G Ninja -B build-switch -DCMAKE_TOOLCHAIN_FILE=cmake/switch.cmake && ninja -C build-switch
+
+# Android (Android SDK + NDK r27c, or open android/ in Android Studio)
+cd android && ./gradlew assembleRelease
 ```
 
-Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](NOTES.md).
+The Android APK is also built automatically by **GitHub Actions** (*Actions → Android APK*); see
+[`android/README.md`](android/README.md). Design notes, and how to regenerate the code from the SWFs, are in
+[`NOTES.md`](NOTES.md).
 
 ## Credits
 
-- **Whylurking**: creator of the recomp.
+- **whylurking**: creator of the recomp.
 - **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
 - **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
 - **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
@@ -369,4 +485,4 @@ Design notes, and how to regenerate the code from the SWFs, are in [`NOTES.md`](
   **[libnx](https://github.com/switchbrew/libnx)** and **[Mesa](https://www.mesa3d.org/)**: their licenses ship with
   each package.
 
-<p align="center"><sub>Made with 😢 and plenty of tears by Whylurking.</sub></p>
+<p align="center"><sub>Made with 😢 and plenty of tears by whylurking.</sub></p>

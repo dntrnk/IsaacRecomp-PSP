@@ -193,3 +193,79 @@
   thread.
 - Diagnostics: `ISAAC_GCHIST=1` (garbage by type at each collection), `ISAAC_STRPROF=1` (dynamic strings created, by
   pattern), `--stats` prints the total GC time.
+
+## Android (v1.2)
+- Same program built as `libmain.so` (SDL 2.30.9's Java activity, fetched by CMake from GitHub) with `gen720/`;
+  arm64-v8a, minSdk 24. Gradle project in `android/`; `.github/workflows/android.yml` builds the APK in CI (Google's
+  SDK hosts are not reachable from the development sandbox). See `android/README.md`.
+- Renderer: `g_glES` → `#version 300 es` shaders and RGBA8 textures. ES has no BGRA upload format, so `texUpload`
+  swaps R/B while copying into the PBO (same cost as the memcpy). Output is pixel-identical to desktop GL (max
+  difference 2/255 on Mesa). `ISAAC_GLES=1` tests it on PC.
+- Data: `/storage/emulated/0/IsaacRecomp/` (from `IsaacActivity.rootDir()` via JNI) holds Isaac.exe, isaac.ini,
+  saves, log.txt, performance.txt. Needs MANAGE_EXTERNAL_STORAGE (Android 11+) / storage permission (older): native
+  `main` waits (pumping events) until `hasStorageAccess()`. Process is `exit(0)`ed at the end (Android may reuse it).
+  "Delete save" restarts through `RestartActivity` (separate process). Background: P pressed if playing, logic
+  thread frozen (`logicPaused`) until foreground.
+- Touch (`rt/touch.cpp`, `TouchControls`, main thread): in gameplay (snapshot `gameplay`) a finger on the left half
+  spawns the movement stick (WASD, 8 sectors), on the right half the shooting stick (arrows, dominant axis with
+  hysteresis); floating base; dead zone 18%. HUD targets come from the logic thread each tick
+  (`recompTouchTargets`: `hud.cacher` middle row = bombs/E, `hud.it` = Space, `hud.extra` when visible = Q; same
+  layout in the three games) and win over the sticks. Keys are held at least 90 ms (game polls at 30 Hz).
+  Menus: the finger is the mouse; a short tap also sends an InputEv type 4: the logic thread presses Space for 3
+  ticks if there is no button under it and no button on screen (`touchButtonAt` / `touchAnyButton`) - skips cutscenes,
+  title cards. Back key: P in game (pause/unpause), Esc in menus (title: the game's quit dialog).
+- Controllers (all SDL platforms): context-aware mapping like Switch (gameplay / pause / menu): A confirms and B goes
+  back in menus; Start/Back pause in game.
+- First device test (a mid-range phone): menu 18-25 fps (17 blurs on the title
+  screen; each recomputed blur = FBO switches, very expensive on tiled GPUs), gameplay ~50 fps with many HELD
+  frames, preload 34 s, and a tap skipped the intro during the preload (type 4 was not blocked). Changes:
+  * render resolution: `IsaacActivity.setRenderHeight` → `SurfaceHolder.setFixedSize` (the display hardware scales
+    for free). `IsaacSurface` re-normalizes touches by the view size (SDL divides by the buffer size). Default 720
+    lines; automatic mode steps down 720→600→540→480 when gameplay stays <88% of the refresh for 10 s with the time
+    in render/GPU wait (not HELD), stored as `auto_height`. `render_height` forces a value.
+  * `gpu_sync` off on Android (glFinish after swap serialized CPU and GPU): fence pacing as on Switch.
+  * blurs on mobile (`filterBudget` 4/frame, `filterMaxAge` 3, `filterLowRes`): changed blurs beyond the budget
+    show their previous result (refreshed at least every 3 frames); smaller RTs. Overlay shows `BLURS (REDONE)`
+    and upload time.
+  * threads: logic and render pinned to the fastest cores (cpuinfo_max_freq), helpers to the others
+    (`platformSetThread`: prio 0x2C = main roles).
+  * taps blocked while preloading; touching shows "LOADING n%" (`renderHint`). `_exit` at the end (exit ran static
+    destructors under live helper threads: FORTIFY "destroyed mutex"). Saves flushed on the logic thread when
+    the app goes to the background.
+  * joysticks: base fixed (radius back to 12% of the screen height, as in the first build) (knob clamps at the edge). Pause button right of
+    "-LIFE-" (root rect 588,4-616,32; touch area +40%), drawn by `renderPauseButton`.
+- Testing on PC: `ISAAC_TOUCH=1`, `ISAAC_TOUCH_INJECT=file` (synthetic touches/back/eval/screenshots in the threaded
+  loop), `ISAAC_INPUT_LOG=1`. Under Xvfb without an audio device the opening cutscene can end by itself early; from
+  there the title's Start did not react once (not seen when the intro is skipped with a tap).
+- Second device test: performance fine. The picture filled only the top-left 2/3 of the screen: SDL adds its
+  SurfaceView without layout params, so after `setFixedSize` the view measured itself to the buffer size; now it
+  gets MATCH_PARENT (the buffer is then scaled to the screen). Also the activity
+  forces immersive mode itself (`goImmersive`, on focus/resume; cutout short edges). Audio sounded worse than on PC:
+  we mixed at 44.1 kHz and SDL resampled again to the device's 48 kHz; now the device is opened with
+  `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE` (48 kHz requested on Android) and we mix at its rate, with Catmull-Rom
+  interpolation instead of linear (3 samples of history across refills; channel end timing and Sound.position
+  unchanged, headless runs stay identical).
+- Third device test (input and sound lag). In gameplay DRAW was ~14 ms per frame with ~20 quads: the driver waits
+  for a free window buffer at the frame's first draw, after input was read. `renderPaceAfterSwap` now clears and
+  flushes the default framebuffer right after the swap on Android, so that wait happens before the next frame polls
+  input (same frame rate). Texture uploads go straight from memory on Android (the PBO path stalled: 0.2 MB/s cost
+  up to 100 ms/s). Audio: 512-sample buffer on Android, and CMake patches SDL 2.30's AAudio backend to request
+  `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` (SDL leaves that call unused; without it Android picks large buffers).
+- Fourth device test (a 120 Hz tablet). Audio sometimes started as a rough "motor" buzz that went away when another
+  app opened an audio stream (screen recording): continuous underruns. With LOW_LATENCY the AAudio stream's buffer
+  size defaults to one burst, smaller than SDL's 512-frame write. The CMake patch now also enables
+  `AAudioStream_setBufferSizeInFrames`/`getBufferCapacityInFrames` and sets the buffer to 2x the SDL block after
+  open/reopen (capped by the capacity). Input lag: render 1-3 ms, many HELD frames at 120 Hz; what remains is the
+  30 Hz game tick plus interpolation (up to ~1 tick); `interp_lead` trades part of it for slight overshoot.
+- Analog movement (`joystick_acceleration`, default 1; all platforms with a stick): the game only knows 8 digital
+  directions, so a native wrapper around `_root.a.dirkey` (installed by `installMoveScale`, re-wrapped if the game
+  redefines it) scales the player's `xenf`/`yenf` by `g_moveScale` after the original runs. The main thread sets
+  `g_moveScale` from the movement stick each frame: `moveCurve` = 0 inside the dead zone (touch 18%, controller
+  20%), then 40% rising linearly to 100% at 75% of the stick's travel, never above the original speed. Keyboard,
+  D-pad and `joystick_acceleration = 0` keep scale 1 (headless runs and determinism unaffected). Switch: in
+  gameplay the left stick position is read directly (`padGetStickPos`) instead of the digital StickL buttons.
+  Measured: scale 1 / 0.7 / 0.4 = 211 / 148 / 85 px/s.
+- Switch (v1.2): `touch_controls` defaults to 1 on Switch as well, so the handheld touch screen uses the same
+  `TouchControls` as Android (sticks, HUD taps, menus as mouse + tap = Space). The old Switch-only path
+  (`switchTouch`: menus only) remains for `touch_controls = 0`. The pause button is drawn only in handheld mode
+  (`appletGetOperationMode`). The .nro metadata (nacptool) carries the author and version 1.2.0.

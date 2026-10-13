@@ -70,6 +70,8 @@ struct Snapshot {
     double logicMs = 0;           // how long this tick took (diagnostics)
     double pubDelay = 0;          // publication delay relative to the nominal time (s)
     int entities = 0;
+    float touchRects[4][4] = {};  // touch screens: bomb / active item / pill-card / pause HUD areas (stage coordinates)
+    int touchMask = 0;            // which of them are on screen
     // computed by the renderer on adoption: uid → node index (open table, power of 2) and, per node, the
     // displacement relative to the previous tick (to detect jumps)
     std::vector<uint64_t> uidTable; uint32_t uidMask = 0;

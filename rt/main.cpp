@@ -7,6 +7,11 @@
 #include <sys/stat.h>
 #endif
 #include "snapshot.h"
+#include "touch.h"
+#ifdef __ANDROID__
+#include <jni.h>
+#include <sys/stat.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -47,6 +52,7 @@ void audioDumpTick(const char*);
 void audioDumpClose();
 extern std::string g_savePath;
 extern bool g_mouseHidden;
+int recompTouchTargets(float out[4][4]);
 void applyLoadPatches(); void recompPatchesTick(); void recompFullscreenChanged(bool full); bool recompInGameplay(bool* inGame);
 extern std::atomic<int> g_fullscreenRequest; extern std::atomic<bool> g_isFullscreen;
 void renderFinish();
@@ -54,6 +60,14 @@ void renderPaceAfterSwap();
 bool renderPaceWait(uint64_t timeoutNs);
 int renderAtlasPages();
 extern float g_audioVolume;
+extern std::atomic<float> g_moveScale; extern bool g_joyAccel;
+}
+// joystick_acceleration: how far the stick is pushed (0..1) -> movement factor. Below the dead zone nothing moves;
+// just past it the player moves at 40% of its speed, rising linearly to 100% at 75% of the stick's travel.
+static float moveCurve(float m, float dead) {
+    if (m <= dead) return 0.f;
+    float t = (m - dead) / (0.75f - dead);
+    return 0.4f + 0.6f * std::max(0.f, std::min(1.f, t));
 }
 using namespace fl;
 
@@ -86,9 +100,18 @@ static int asciiOf(SDL_Keycode k, bool shift) {
 struct Config {
     std::string swf, game; bool fullscreen = true; bool vsync = true; int width = 1440, height = 1080; int volume = 100;
     bool smooth = true; bool filters = true; int cacheMB = fl::g_lim.defaultCacheMB;
-    bool gpuSync = !fl::kIsSwitch;   // glFinish after presenting: on Switch it prevents CPU/GPU overlap
+    bool gpuSync = !fl::kIsSwitch && !fl::kIsAndroid;   // glFinish after presenting: on Switch/Android it prevents CPU/GPU overlap
     bool lowLatency = true;          // (without gpu_sync) never leave more than one frame queued on the GPU
     double interpLead = 0;           // (experimental) draw this fraction of a tick ahead: less visual delay, slight overshoot
+#if defined(__ANDROID__) || defined(__SWITCH__)
+    bool touchControls = true;       // on-screen joysticks + taps on the HUD (see touch.h; Switch: handheld touch screen)
+#else
+    bool touchControls = false;      // (PC: for testing, with a touch screen or mouse-generated touches)
+#endif
+    bool performance = false;        // performance diagnostics on from the start (overlay + performance.txt)
+    bool joystickAcceleration = true;   // analog sticks / touch: movement speed follows how far the stick is pushed
+    int renderHeight = 0;            // (Android) render resolution (height in pixels); 0 = automatic
+    int autoHeight = 0;              // (Android) the resolution automatic mode settled on for this device (written by the game)
 };
 static std::string trim(std::string s) { while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back(); size_t i = 0; while (i < s.size() && isspace((unsigned char)s[i])) i++; return s.substr(i); }
 static void loadConfig(const std::string& path, Config& c) {
@@ -105,7 +128,22 @@ static void loadConfig(const std::string& path, Config& c) {
              "; low_latency = 1 keeps reading input while waiting for the display (0 = off)\n"
              "low_latency = 1\n"
              "; interp_lead = 0 (experimental, up to 0.5): draw ahead by that fraction of a tick; less visual delay, slight overshoot\n"
-             "interp_lead = 0\n";
+             "interp_lead = 0\n"
+             "; performance = 1 shows the performance diagnostics and writes them to performance.txt (same as F3)\n"
+             "performance = 0\n"
+             "; joystick_acceleration = 1: with an analog stick (controller, Switch, touch joystick) the speed follows how far\n"
+             ";   it is pushed, for small precise moves (top speed unchanged); 0 = always full speed, as on the keyboard\n"
+             "joystick_acceleration = 1\n"
+#if defined(__ANDROID__) || defined(__SWITCH__)
+             "; touch_controls = 0 turns off the touch joysticks, HUD taps and pause button (touch then only works in menus)\n"
+             "touch_controls = 1\n"
+#endif
+#ifdef __ANDROID__
+             "; render_height = 0 picks the resolution automatically (starts at 720 and goes down if the device can't keep\n"
+             ";   60 fps); or force one: 1080 (or the screen's: sharpest), 720, 600, 540, 480 (fastest)\n"
+             "render_height = 0\n"
+#endif
+             ;
         return;
     }
     while (std::getline(f, line)) {
@@ -116,6 +154,9 @@ static void loadConfig(const std::string& path, Config& c) {
         if (k == "swf") c.swf = v; else if (k == "game" || k == "juego") c.game = v; else if (k == "fullscreen") c.fullscreen = n; else if (k == "vsync") c.vsync = n;
         else if (k == "width") c.width = n; else if (k == "height") c.height = n; else if (k == "volume") c.volume = n;
         else if (k == "smooth") c.smooth = n; else if (k == "filters") c.filters = n; else if (k == "cache_mb") c.cacheMB = n; else if (k == "gpu_sync") c.gpuSync = n; else if (k == "low_latency") c.lowLatency = n; else if (k == "interp_lead") c.interpLead = std::max(0.0, std::min(0.5, atof(v.c_str())));
+        else if (k == "performance") c.performance = n; else if (k == "touch_controls") c.touchControls = n;
+        else if (k == "joystick_acceleration") c.joystickAcceleration = n;
+        else if (k == "render_height") c.renderHeight = n; else if (k == "auto_height") c.autoHeight = n;
     }
 #ifdef __SWITCH__
     // console memory is fixed: never more than twice the planned amount, and never less (an isaac.ini from an
@@ -174,10 +215,49 @@ static void showError(const char* title, const char* msg, SDL_Window* w = nullpt
 }
 static bool fileExists(const std::string& p) { FILE* f = fopen(p.c_str(), "rb"); if (f) fclose(f); return f != nullptr; }
 
+#ifdef __ANDROID__
+// ---- Android: static helpers of the Java activity (android/app/src/main/java/.../IsaacActivity.java)
+static jclass activityClass(JNIEnv* env) {
+    jobject act = (jobject)SDL_AndroidGetActivity();
+    jclass c = env->GetObjectClass(act); env->DeleteLocalRef(act); return c;
+}
+static std::string javaString(const char* method) {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv(); jclass c = activityClass(env);
+    jmethodID m = env->GetStaticMethodID(c, method, "()Ljava/lang/String;");
+    std::string r;
+    if (m) { jstring js = (jstring)env->CallStaticObjectMethod(c, m); if (js) { const char* u = env->GetStringUTFChars(js, nullptr); r = u; env->ReleaseStringUTFChars(js, u); env->DeleteLocalRef(js); } }
+    env->DeleteLocalRef(c); return r;
+}
+static bool javaBool(const char* method) {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv(); jclass c = activityClass(env);
+    jmethodID m = env->GetStaticMethodID(c, method, "()Z");
+    bool r = m && env->CallStaticBooleanMethod(c, m);
+    env->DeleteLocalRef(c); return r;
+}
+static int javaInt(const char* method) {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv(); jclass c = activityClass(env);
+    jmethodID m = env->GetStaticMethodID(c, method, "()I");
+    int r = m ? env->CallStaticIntMethod(c, m) : 0;
+    env->DeleteLocalRef(c); return r;
+}
+static void javaVoidInt(const char* method, int arg) {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv(); jclass c = activityClass(env);
+    jmethodID m = env->GetStaticMethodID(c, method, "(I)V");
+    if (m) env->CallStaticVoidMethod(c, m, (jint)arg);
+    env->DeleteLocalRef(c);
+}
+static void javaVoid(const char* method, const char* arg = nullptr) {
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv(); jclass c = activityClass(env);
+    jmethodID m = env->GetStaticMethodID(c, method, arg ? "(Ljava/lang/String;)V" : "()V");
+    if (m) { if (arg) { jstring js = env->NewStringUTF(arg); env->CallStaticVoidMethod(c, m, js); env->DeleteLocalRef(js); } else env->CallStaticVoidMethod(c, m); }
+    env->DeleteLocalRef(c);
+}
+#endif
+
 // ---- test script (--script): "tick action arg" per line
 struct ScriptCmd { uint32_t tick; std::string op; std::string arg; };
 
-#if !defined(__SWITCH__) && !defined(_WIN32)
+#if !defined(__SWITCH__) && !defined(_WIN32) && !defined(__ANDROID__)
 // (diagnostics: stack sampling with SIGPROF during a specific tick, ISAAC_SAMPLE_TICK=n)
 #include <execinfo.h>
 #include <signal.h>
@@ -355,6 +435,33 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Isaac recomp (Switch) - %s mode, memory %d/%d MB\n",
                 at == AppletType_Application || at == AppletType_SystemApplication ? "application" : "applet (Album)", used, total);
     }
+#elif defined(__ANDROID__)
+    // everything in the IsaacRecomp folder at the root of the internal storage (/storage/emulated/0/IsaacRecomp):
+    // Isaac.exe, isaac.ini, saves, log.txt, performance.txt. Reading a file we didn't create there needs
+    // "All files access" (Android 11+) or the storage permission (older versions): the activity asks for it.
+    SDL_Init(SDL_INIT_VIDEO);
+    if (!javaBool("hasStorageAccess")) {
+        javaVoid("requestStorageAccess");
+        while (!javaBool("hasStorageAccess")) {
+            SDL_Event e; while (SDL_PollEvent(&e)) if (e.type == SDL_QUIT) { SDL_Quit(); exit(0); }
+            SDL_Delay(100);
+        }
+    }
+    std::string base = javaString("rootDir");
+    if (base.empty()) base = "/storage/emulated/0/IsaacRecomp";
+    mkdir(base.c_str(), 0777);
+    base += "/";
+    std::string pref = base;
+    freopen((base + "log.txt").c_str(), "w", stderr);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    std::set_terminate([] {
+        const char* what = "(unknown)";
+        try { if (auto e = std::current_exception()) std::rethrow_exception(e); }
+        catch (const std::exception& e) { what = e.what(); } catch (...) {}
+        fprintf(stderr, "FATAL ERROR: uncaught exception: %s\n", what); fflush(stderr);
+        _exit(1);
+    });
+    logf("Isaac recomp (Android) - data folder %s\n", base.c_str());
 #else
     std::string base = SDL_GetBasePath() ? SDL_GetBasePath() : "./";
     std::string pref; { char* p = SDL_GetPrefPath("IsaacRecomp", "WrathOfTheLamb"); if (p) { pref = p; SDL_free(p); } else pref = base; }
@@ -428,9 +535,20 @@ int main(int argc, char** argv) {
     Uint32 sdlFlags = SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER;
 #endif
     if (headless && norender) sdlFlags = SDL_INIT_TIMER | SDL_INIT_AUDIO;
+    if (getenv("ISAAC_TOUCH")) cfg.touchControls = true;   // (testing on PC)
+    if (cfg.touchControls) SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");   // touches are handled as such, not as a mouse
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");   // back = pause / Esc (instead of closing the app)
+#endif
     if (SDL_Init(sdlFlags) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     if (found.empty()) {
-#ifdef __SWITCH__
+#if defined(__ANDROID__)
+        showError("The Binding of Isaac",
+            ("Game data not found.\n\nCopy 'Isaac.exe' from the game's Steam folder into the IsaacRecomp folder of your "
+             "device's internal storage:\n\n" + base + "\n\nThe original, Wrath of the Lamb and Eternal Edition all work; if you "
+             "have several, give them different names (for example Isaac-Eternal.exe).").c_str());
+#elif defined(__SWITCH__)
         showError("The Binding of Isaac", "  Game data not found.\n\n  Copy 'Isaac.exe' from the game's Steam folder\n  into the  sd:/switch/isaac/  folder on the SD card.\n\n"
                   "  The original, Wrath of the Lamb and Eternal Edition all work; if you\n  have several, give them different names (e.g. Isaac-Eternal.exe).");
 #else
@@ -441,13 +559,20 @@ int main(int argc, char** argv) {
 #endif
         return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#ifdef __ANDROID__
+    g_glES = true;
+#else
+    g_glES = getenv("ISAAC_GLES") != nullptr;   // (testing the Android renderer on PC)
+#endif
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_glES ? 0 : 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, g_glES ? SDL_GL_CONTEXT_PROFILE_ES : SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     Uint32 wflags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
 #ifdef __SWITCH__
     // 1080p when docked, 720p in handheld mode (SDL resizes on dock/undock)
     if (appletGetOperationMode() == AppletOperationMode_Console) { cfg.width = 1920; cfg.height = 1080; } else { cfg.width = 1280; cfg.height = 720; }
+#elif defined(__ANDROID__)
+    wflags |= SDL_WINDOW_FULLSCREEN;
 #else
     if (cfg.fullscreen) wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 #endif
@@ -455,14 +580,31 @@ int main(int argc, char** argv) {
     if (!(headless && norender)) {   // (logic tests need neither a window nor a GPU)
         win = SDL_CreateWindow("The Binding of Isaac", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, cfg.width, cfg.height, wflags);
         if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
-#ifndef __SWITCH__
+#if !defined(__SWITCH__) && !defined(__ANDROID__)
         if (!headless) { SDL_PumpEvents(); fitWindow(win, cfg.width, cfg.height); }
 #endif
         gl = SDL_GL_CreateContext(win);
-        if (!gl) { showError("The Binding of Isaac", "OpenGL 3.3 is required", win); return 1; }
+        if (!gl) { showError("The Binding of Isaac", g_glES ? "OpenGL ES 3.0 is required" : "OpenGL 3.3 is required", win); return 1; }
         SDL_GL_SetSwapInterval(cfg.vsync ? 1 : 0);
-        if (!renderInit()) { showError("The Binding of Isaac", "Could not initialize OpenGL 3.3", win); return 1; }
+        if (!renderInit()) { showError("The Binding of Isaac", g_glES ? "Could not initialize OpenGL ES 3.0" : "Could not initialize OpenGL 3.3", win); return 1; }
         g_gpuBitmaps = getenv("ISAAC_CPUBITMAPS") == nullptr;   // layers that are only displayed: drawn on the GPU
+#ifdef __ANDROID__
+        {   // render resolution: the display hardware scales the surface up for free (see IsaacActivity.setRenderHeight)
+            int screenH = javaInt("screenHeight");
+            int want = cfg.renderHeight > 0 ? cfg.renderHeight : cfg.autoHeight > 0 ? cfg.autoHeight : 720;
+            want = std::max(360, want);
+            if (screenH > 0 && want < screenH) {
+                javaVoidInt("setRenderHeight", want);
+                for (int i = 0; i < 150; i++) {   // wait (up to 1.5 s) for the new surface size before preloading at it
+                    SDL_Event e; while (SDL_PollEvent(&e)) {}
+                    int w, h; SDL_GL_GetDrawableSize(win, &w, &h); if (h == want) break;
+                    SDL_Delay(10);
+                }
+            }
+            int w, h; SDL_GL_GetDrawableSize(win, &w, &h);
+            logf("render resolution %dx%d (screen height %d, render_height %d%s)\n", w, h, screenH, cfg.renderHeight, cfg.renderHeight ? "" : " = automatic");
+        }
+#endif
 #ifdef __SWITCH__
         {
             int used, total; platformMemInfo(&used, &total);
@@ -495,16 +637,19 @@ int main(int argc, char** argv) {
     std::string gsuf = gameTag == "wotl" ? "" : "_" + gameTag;
     if (g_savePath.empty()) g_savePath = pref + "isaac" + gsuf + "_save.sol";
     if (win) SDL_SetWindowTitle(win, (std::string("The Binding of Isaac") + (gameTag == "og" ? "" : std::string(": ") + g_code->title)).c_str());
+    g_joyAccel = cfg.joystickAcceleration;
     applyLoadPatches();
     logf("SWF loaded: v%d, %dx%d @ %.0f fps, recompiled stage %dx%d\n", g_movie.version, g_movie.width, g_movie.height, g_movie.frameRate, g_stageW, g_stageH);
     g_renderCfg.smooth = cfg.smooth; g_renderCfg.filters = cfg.filters; g_renderCfg.cacheMB = cfg.cacheMB;
+    if (kIsAndroid || getenv("ISAAC_MOBILE_FILTERS")) { g_renderCfg.filterBudget = 4; g_renderCfg.filterMaxAge = 3; g_renderCfg.filterLowRes = true; }
     g_renderCfg.rasterWaitMs = headless ? 1e9 : kIsSwitch ? 3.0 : 6.0;   // (testing: always complete, deterministic)
     g_renderCfg.rasterWaitNoFallbackMs = headless ? 1e9 : 40.0;          // no other scale to show: better to wait
     g_audioVolume = cfg.volume / 100.f;
     audioInit(!headless);   // in test mode audio advances with ticks, not with the clock
-    g_isFullscreen = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    g_isFullscreen = win && (SDL_GetWindowFlags(win) & (kIsAndroid ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
     playerInit();
     std::string preloadPath = pref + "preload" + gsuf + ".txt";
+    size_t preloadTotal = 0;
     if (win && (!headless || getenv("ISAAC_PRELOAD"))) {   // (automated tests skip preloading: identical result, faster)
         // in the background, while the intro cutscene plays (it can't be skipped until this finishes)
         std::vector<PreKey> keys = loadPreloadList(preloadPath, gameTag);
@@ -520,6 +665,7 @@ int main(int argc, char** argv) {
         }
         int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
         renderPreload(keys, dw, dh, nullptr);
+        preloadTotal = keys.size();
         logf("preload: %zu graphics queued\n", keys.size());
     }
     for (int i = 0; i < SDL_NumJoysticks(); i++) if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
@@ -531,13 +677,14 @@ int main(int argc, char** argv) {
     std::vector<double> logicMs, renderMs, allocs; std::vector<int> ballCount;
     std::map<int, bool> padKeys;
     // ---- performance diagnostics (F3): overlay + performance.txt in the saves folder
-    bool perfOn = perfStart; std::vector<std::string> perfLines;
-    struct PerfWin { int frames = 0, ticks = 0, slow = 0, rasters = 0, held = 0, tex = 0, pending = 0; double frameMax = 0, logic = 0, logicMax = 0, render = 0, renderMax = 0, swap = 0, rasterMs = 0, upMB = 0;
-                     double adopt = 0, compile = 0, exec = 0, other = 0; int ent = 0, nodes = 0, quads = 0, draws = 0; } pw;
+    bool perfOn = perfStart || cfg.performance; std::vector<std::string> perfLines;
+    struct PerfWin { int frames = 0, ticks = 0, slow = 0, rasters = 0, held = 0, tex = 0, pending = 0; double frameMax = 0, logic = 0, logicMax = 0, render = 0, renderMax = 0, swap = 0, rasterMs = 0, upMB = 0, upMs = 0;
+                     double adopt = 0, compile = 0, exec = 0, other = 0; int ent = 0, nodes = 0, quads = 0, draws = 0, filters = 0, fhits = 0; } pw;
     double pwStart = nowSec();
     // performance.txt is written from a separate thread (writing to the SD card is slow and must not stall the frame)
     std::string perfPath = pref + "performance.txt";
     auto perfLog = [&](const std::string& line) { platformAppendFileAsync(perfPath, line); };
+    if (perfOn && !headless) perfLog("--- diagnostics enabled (performance = 1 in isaac.ini) ---\n");
     double gcMs0 = g_gcMs;
     auto entityCount = []() {
         Value b = getMemK(getMemK(Value((Object*)vm.root), intern("a")), intern("ball"));
@@ -628,13 +775,21 @@ int main(int argc, char** argv) {
         // ---------------------------------------------------------------- normal mode
         // Logic thread: exact 30 Hz ticks on its own clock; publishes one snapshot per tick.
         // Main thread: events + rendering at the refresh rate, interpolating between snapshots.
-        struct InputEv { int type; int code, ascii; bool down; double x, y; };   // 0 key, 1 mouse, 2 release all
+        struct InputEv { int type; int code, ascii; bool down; double x, y; };   // 0 key, 1 mouse, 2 release all, 3 fullscreen, 4 menu tap
+        const bool touchUI = cfg.touchControls && !headless;
+        std::atomic<bool> logicPaused{false};   // (Android: app in the background)
+        std::atomic<int> flushReq{0}, flushDone{0};   // save data written on the logic thread (app going to the background)
+        std::vector<std::string> evalQ;         // (testing: ISAAC_TOUCH_INJECT "eval", run on the logic thread)
         std::mutex inMu, snapMu; std::vector<InputEv> inQ; std::deque<SnapPtr> snapQ;
         std::atomic<bool> logicRun{true};
         std::atomic<double> logicBase{0};
         // while graphics are preloading (during the intro cutscene), input does not reach the game
         bool inputBlocked = false;
-        auto pushIn = [&](InputEv ev) { if (inputBlocked && (ev.type == 0 || ev.type == 1)) return; std::lock_guard<std::mutex> lk(inMu); inQ.push_back(ev); };
+        double blockedTouchAt = -1;   // last input attempt while preloading (shows the progress for a few seconds)
+        auto pushIn = [&](InputEv ev) {
+            if (inputBlocked && (ev.type == 0 || ev.type == 1 || ev.type == 4)) { if (ev.type != 1 || ev.code == 1) blockedTouchAt = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency(); return; }
+            std::lock_guard<std::mutex> lk(inMu); inQ.push_back(ev);
+        };
         std::string iniPath = base + "isaac.ini";
         auto setFullscreen = [&](bool full) {
             bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -649,7 +804,10 @@ int main(int argc, char** argv) {
             setThreadRole(ROLE_LOGIC);
             double base = nowSec(); uint64_t n = 0;
             std::vector<InputEv> evs;
+            uint32_t tapSpaceUntil = 0;   // touch: Space pressed by a tap on a screen without buttons, released at this tick
             while (logicRun) {
+                if (flushReq.load() != flushDone.load()) { int r = flushReq.load(); sharedObjectFlushAll(); flushDone = r; }
+                if (logicPaused) { SDL_Delay(20); base = nowSec() - n * dt; continue; }   // (frozen while in the background)
                 double target = base + n * dt, now = nowSec();
                 if (now < target) {
                     double wait = target - now;
@@ -660,14 +818,24 @@ int main(int argc, char** argv) {
                 // running several ticks in a row: that looked like a jump (the transition animation was skipped
                 // and the game moved on unseen). Instead, continue from now at the normal pace.
                 if (now - target > 2.5 * dt) { base += now - target; target = now; }
-                { std::lock_guard<std::mutex> lk(inMu); evs.swap(inQ); }
+                std::vector<std::string> evals;
+                { std::lock_guard<std::mutex> lk(inMu); evs.swap(inQ); evals.swap(evalQ); }
+                for (auto& x : evals) debugEval(x);
+                static const bool inputLog = getenv("ISAAC_INPUT_LOG") != nullptr;   // (testing)
                 for (auto& ev : evs) {
+                    if (inputLog) logf("[input] tick %u type %d code %d down %d at %.0f,%.0f\n", g_player.tick, ev.type, ev.code, ev.down, ev.x, ev.y);
                     if (ev.type == 0) keyEvent(ev.code, ev.ascii, ev.down);
                     else if (ev.type == 1) mouseEvent(ev.x, ev.y, ev.code);
                     else if (ev.type == 3) recompFullscreenChanged(ev.down);
+                    else if (ev.type == 4) {
+                        // a tap in a menu already went through as a mouse click; if there is nothing clickable on screen
+                        // (cutscenes, title cards, death screen...) it means "continue": Space, held for a few ticks
+                        if (!touchButtonAt(ev.x, ev.y) && !touchAnyButton() && !tapSpaceUntil) { keyEvent(32, 32, true); tapSpaceUntil = g_player.tick + 3; }
+                    }
                     else for (int k = 1; k < 256; k++) if (g_player.keys[k]) keyEvent(k, 0, false);
                 }
                 evs.clear();
+                if (tapSpaceUntil && g_player.tick >= tapSpaceUntil) { keyEvent(32, 0, false); tapSpaceUntil = 0; }
                 monkeyStep();
                 g_player.timeMs = n * dt * 1000.0;
                 renderFreeRetired();   // (snapshots the renderer is done with: freed here, not on the render thread)
@@ -676,6 +844,7 @@ int main(int argc, char** argv) {
                 SnapPtr snap = buildSnapshot();
                 snap->time = target; snap->logicMs = (nowSec() - t0) * 1000.0;
                 snap->entities = entityCount(); snap->mouseHidden = g_mouseHidden; snap->gameplay = recompInGameplay(&snap->inGame);
+                if (touchUI) snap->touchMask = recompTouchTargets(snap->touchRects);
                 bool lastTick = maxFrames >= 0 && (int)g_player.tick >= maxFrames;
                 snap->quit = g_player.quit || lastTick;
                 snap->pubDelay = nowSec() - target;
@@ -693,6 +862,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         (void)logicBase;
+        float padMove = -1.f;   // analog movement from a controller's left stick (0..1, -1 = none)
 #ifdef __SWITCH__
         padConfigureInput(1, HidNpadStyleSet_NpadStandard);
         PadState pad; padInitializeDefault(&pad);
@@ -719,8 +889,34 @@ int main(int argc, char** argv) {
                 if (rUntil > 0 && now >= rUntil) { pushIn({0, 82, 0, false, 0, 0}); rUntil = -1; }
                 if (!zr && zrSince < 0 && rUntil < 0) {}
             }
+            // analog movement (joystick_acceleration): in gameplay the left stick is read as a vector (round dead zone,
+            // 8 directions) instead of libnx's digital stick "buttons", and its distance sets the speed
+            const bool analog = play && g_joyAccel;
+            {
+                static int held4[4] = {0, 0, 0, 0};
+                int want[4] = {0, 0, 0, 0};
+                padMove = -1.f;
+                if (analog) {
+                    HidAnalogStickState st = padGetStickPos(&pad, 0);
+                    float m = std::min(1.f, std::hypot((float)st.x, (float)st.y) / 32767.f);
+                    if (m > 0.2f) {
+                        float ux = st.x / 32767.f / m, uy = -st.y / 32767.f / m;   // (libnx: y up)
+                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                        padMove = m;
+                    }
+                }
+                static const int kGame[4] = {'A', 'W', 'D', 'S'};
+                for (int k = 0; k < 4; k++) {
+                    int code = want[k] ? kGame[k] : 0;
+                    if (held4[k] == code) continue;
+                    if (held4[k] && --keyRefs[held4[k]] == 0) pushIn({0, held4[k], 0, false, 0, 0});
+                    if (code && keyRefs[code]++ == 0) pushIn({0, code, 0, true, 0, 0});
+                    held4[k] = code;
+                }
+            }
             for (size_t i = 0; i < sizeof(kPadMap) / sizeof(kPadMap[0]); i++) {
-                bool down = (b & kPadMap[i].btn) != 0;
+                const u64 stickL = HidNpadButton_StickLLeft | HidNpadButton_StickLRight | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
+                bool down = (b & kPadMap[i].btn) != 0 && !(analog && (kPadMap[i].btn & stickL));
                 if (down && !padHeld[i]) {
                     int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
                     if (!k) continue;
@@ -733,6 +929,9 @@ int main(int argc, char** argv) {
             }
         };
 #endif
+#ifdef __ANDROID__
+        platformSetThread(0, 0x2C);   // render thread on the fast cores (see platform.cpp)
+#endif
         // presentation clock: one exact step per monitor refresh, corrected gradually
         double refresh = 60; { SDL_DisplayMode dm; if (SDL_GetWindowDisplayMode(win, &dm) == 0 && dm.refresh_rate > 0) refresh = dm.refresh_rate; }
         bool vsyncOn = cfg.vsync && SDL_GL_GetSwapInterval() != 0;
@@ -741,8 +940,40 @@ int main(int argc, char** argv) {
         std::deque<double> procTimes;    // time taken by logic to publish each tick (s)
         bool quitSeen = false;
         double lastLearnSave = nowSec(), preloadT0 = nowSec();
-        bool preloading = true;
+        bool preloading = true; size_t preloadLeft = 0;
         const bool pace = vsyncOn && !cfg.gpuSync && cfg.lowLatency;   // (with gpu_sync we already wait for the whole GPU)
+        // ---- touch screen (Android, Switch handheld; on PC with touch_controls = 1): joysticks, HUD taps, menus (touch.h)
+        TouchControls touch({
+            [&](int code, bool down) { pushIn({0, code, down && code == 32 ? 32 : 0, down, 0, 0}); },
+            [&](int type, double sx, double sy) { pushIn({1, type, 0, false, sx, sy}); },
+            [&](double sx, double sy) { pushIn({4, 0, 0, false, sx, sy}); }});
+        auto touchCtx = [&]() {
+            TouchCtx c; const Snapshot* cs = renderCurrent();
+            c.gameplay = cs && cs->gameplay; c.inGame = cs && cs->inGame;
+            SDL_GL_GetDrawableSize(win, &c.winW, &c.winH);
+            c.stageToWin = stageToWindowFor(c.winW, c.winH);
+            if (cs) { c.mask = cs->touchMask; memcpy(c.rects, cs->touchRects, sizeof c.rects); }
+            return c;
+        };
+        // (testing) ISAAC_TOUCH_INJECT=file: "<tick> down|move|up <finger> <x 0..1> <y 0..1>", "<tick> back",
+        // "<tick> shot <file.bmp>", "<tick> quit": synthetic touch events for the real (threaded) game loop
+        struct Inject { uint32_t tick; std::string op; long id; double x, y; std::string arg; };
+        std::vector<Inject> inject; size_t injectPos = 0; std::string injectShot;
+        if (const char* ip = getenv("ISAAC_TOUCH_INJECT")) {
+            std::ifstream f(ip); std::string line;
+            while (std::getline(f, line)) {
+                std::istringstream ss(line); Inject j{0, "", 0, 0, 0, ""};
+                if (!(ss >> j.tick >> j.op)) continue;
+                if (j.op == "down" || j.op == "move" || j.op == "up") ss >> j.id >> j.x >> j.y; else { std::getline(ss, j.arg); j.arg = trim(j.arg); }
+                inject.push_back(j);
+            }
+        }
+        auto backKey = [&]() {   // Android back button / gesture: pause in game, Esc in menus
+            const Snapshot* cs = renderCurrent();
+            int k = cs && cs->inGame ? 'P' : 27;
+            pushIn({0, k, k == 27 ? 27 : 0, true, 0, 0});
+            SDL_AddTimer(120, [](Uint32, void* p) -> Uint32 { SDL_Event e{}; e.type = SDL_USEREVENT; e.user.code = 0x4B; e.user.data1 = p; SDL_PushEvent(&e); return 0; }, (void*)(intptr_t)k);
+        };
         // Input polling. Called at the start of every frame and also repeatedly (every ~1 ms) while the main
         // thread waits for the GPU / the refresh, so a key or button press reaches the logic thread almost
         // immediately instead of waiting for the next frame (up to one refresh, ~8 ms on average). An input that
@@ -755,8 +986,35 @@ int main(int argc, char** argv) {
                     case SDL_WINDOWEVENT:
                         if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) pushIn({2, 0, 0, false, 0, 0});   // avoid "stuck" keys
                         break;
+                    case SDL_USEREVENT:
+                        if (e.user.code == 0x4B) { int k = (int)(intptr_t)e.user.data1; pushIn({0, k, 0, false, 0, 0}); }   // (back key release)
+                        break;
+                    case SDL_APP_WILLENTERBACKGROUND: {   // Android: phone call, home button...: pause the run and freeze logic
+                        const Snapshot* cs = renderCurrent();
+                        if (cs && cs->gameplay) { pushIn({0, 'P', 0, true, 0, 0}); pushIn({0, 'P', 0, false, 0, 0}); }
+                        touch.releaseAll(nowSec()); pushIn({2, 0, 0, false, 0, 0});
+                        int r = ++flushReq;   // the save is written by the logic thread (it owns the game state)
+                        for (int i = 0; i < 50 && flushDone.load() != r; i++) SDL_Delay(5);
+                        break;
+                    }
+                    case SDL_APP_DIDENTERBACKGROUND: logicPaused = true; break;
+                    case SDL_APP_WILLENTERFOREGROUND: case SDL_APP_DIDENTERFOREGROUND: logicPaused = false; break;
+                    case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP:
+                        if (touchUI) {
+                            TouchCtx c = touchCtx(); double px = e.tfinger.x * c.winW, py = e.tfinger.y * c.winH;
+                            if (e.type == SDL_FINGERDOWN) touch.down((int64_t)e.tfinger.fingerId, px, py, c, nowSec());
+                            else if (e.type == SDL_FINGERMOTION) touch.move((int64_t)e.tfinger.fingerId, px, py, c, nowSec());
+                            else touch.up((int64_t)e.tfinger.fingerId, px, py, c, nowSec());
+                            break;
+                        }
+#ifdef __SWITCH__
+                        goto switchTouch;
+#else
+                        break;
+#endif
                     case SDL_KEYDOWN: case SDL_KEYUP: {
                         bool down = e.type == SDL_KEYDOWN;
+                        if (e.key.keysym.sym == SDLK_AC_BACK) { if (down && !e.key.repeat) backKey(); break; }
                         if (down && !e.key.repeat && (e.key.keysym.sym == SDLK_F11 || (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
                             bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                             setFullscreen(!fs); pushIn({3, 0, 0, !fs, 0, 0}); break;
@@ -779,7 +1037,7 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
                     // touch screen (handheld mode): in menus and in the pause screen, a tap = a mouse click
                     // (the original game's buttons respond to the mouse). Does nothing during gameplay.
-                    case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP: {
+                    switchTouch: {
                         static SDL_FingerID active = -1;
                         const Snapshot* cs = renderCurrent();
                         bool play = cs && cs->gameplay;
@@ -796,30 +1054,68 @@ int main(int argc, char** argv) {
 #endif
                     case SDL_CONTROLLERDEVICEADDED: SDL_GameControllerOpen(e.cdevice.which); break;
                     case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
-                        bool d = e.type == SDL_CONTROLLERBUTTONDOWN; int code = 0;
-                        switch (e.cbutton.button) {
-                            case SDL_CONTROLLER_BUTTON_A: code = 40; break; case SDL_CONTROLLER_BUTTON_B: code = 39; break;
-                            case SDL_CONTROLLER_BUTTON_X: code = 37; break; case SDL_CONTROLLER_BUTTON_Y: code = 38; break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_UP: code = 'W'; break; case SDL_CONTROLLER_BUTTON_DPAD_DOWN: code = 'S'; break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_LEFT: code = 'A'; break; case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: code = 'D'; break;
-                            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: code = 'E'; break; case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: code = 32; break;
-                            case SDL_CONTROLLER_BUTTON_START: code = 13; break; case SDL_CONTROLLER_BUTTON_BACK: code = 27; break;
-                            case SDL_CONTROLLER_BUTTON_RIGHTSTICK: code = 'Q'; break; case SDL_CONTROLLER_BUTTON_LEFTSTICK: code = 'P'; break;
-                            default: break;
+                        // same scheme as on Switch: the key depends on whether we are playing, paused or in a menu
+                        // (A confirms and B goes back in menus). The key sent on press is the one released.
+                        struct Map { int game, pause, menu; };
+                        static const std::map<int, Map> kMap = {
+                            {SDL_CONTROLLER_BUTTON_A, {40, 32, 32}}, {SDL_CONTROLLER_BUTTON_B, {39, 27, 27}},
+                            {SDL_CONTROLLER_BUTTON_X, {37, 37, 37}}, {SDL_CONTROLLER_BUTTON_Y, {38, 38, 38}},
+                            {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, {'E', 0, 0}}, {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, {32, 0, 0}},
+                            {SDL_CONTROLLER_BUTTON_LEFTSTICK, {'P', 'P', 0}}, {SDL_CONTROLLER_BUTTON_RIGHTSTICK, {'Q', 0, 0}},
+                            {SDL_CONTROLLER_BUTTON_START, {'P', 'P', 13}}, {SDL_CONTROLLER_BUTTON_BACK, {'P', 'P', 27}},
+                            {SDL_CONTROLLER_BUTTON_DPAD_UP, {'W', 38, 38}}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, {'S', 40, 40}},
+                            {SDL_CONTROLLER_BUTTON_DPAD_LEFT, {'A', 37, 37}}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, {'D', 39, 39}},
+                        };
+                        static std::map<int, int> held;   // button -> key sent
+                        bool d = e.type == SDL_CONTROLLERBUTTONDOWN; int btn = e.cbutton.button;
+                        auto it = kMap.find(btn); if (it == kMap.end()) break;
+                        if (d) {
+                            const Snapshot* cs = renderCurrent();
+                            int code = cs && cs->gameplay ? it->second.game : cs && cs->inGame ? it->second.pause : it->second.menu;
+                            if (!code || held.count(btn)) break;
+                            held[btn] = code;
+                            if (padKeys[code] != true) { padKeys[code] = true; pushIn({0, code, (code == 32 || code == 13 || code == 27) ? code : 0, true, 0, 0}); }
+                        } else {
+                            auto h = held.find(btn); if (h == held.end()) break;
+                            int code = h->second; held.erase(h);
+                            bool still = false; for (auto& o : held) still |= o.second == code;
+                            if (!still && padKeys[code]) { padKeys[code] = false; pushIn({0, code, 0, false, 0, 0}); }
                         }
-                        if (code && padKeys[code] != d) { padKeys[code] = d; pushIn({0, code, code == 32 ? 32 : 0, d, 0, 0}); }
                         break;
                     }
                     case SDL_CONTROLLERAXISMOTION: {
                         const int dead = 12000; int v = e.caxis.value;
                         auto pk = [&](int code, bool d) { if (padKeys[code] != d) { padKeys[code] = d; pushIn({0, code, code == 32 ? 32 : 0, d, 0, 0}); } };
+                        const Snapshot* cs = renderCurrent(); bool play = cs && cs->gameplay;
+                        // left stick: WASD in gameplay, arrows in menus (the arrows/WASD of the other mode are released)
                         switch (e.caxis.axis) {
-                            case SDL_CONTROLLER_AXIS_LEFTX: pk('A', v < -dead); pk('D', v > dead); break;
-                            case SDL_CONTROLLER_AXIS_LEFTY: pk('W', v < -dead); pk('S', v > dead); break;
+                            case SDL_CONTROLLER_AXIS_LEFTX: case SDL_CONTROLLER_AXIS_LEFTY: {
+                                static int lx = 0, ly = 0, held[4] = {0, 0, 0, 0};   // stick position; key held per direction (L U R D)
+                                (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ? lx : ly) = v;
+                                int want[4] = {0, 0, 0, 0};
+                                if (play && g_joyAccel) {
+                                    // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
+                                    float m = std::min(1.f, std::hypot((float)lx, (float)ly) / 32767.f);
+                                    if (m > 0.2f) {
+                                        float ux = lx / 32767.f / m, uy = ly / 32767.f / m;
+                                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                                    }
+                                    padMove = m > 0.2f ? m : -1.f;
+                                } else {
+                                    want[0] = lx < -dead; want[2] = lx > dead; want[1] = ly < -dead; want[3] = ly > dead;
+                                    padMove = -1.f;
+                                }
+                                static const int kGame[4] = {'A', 'W', 'D', 'S'}, kMenu[4] = {37, 38, 39, 40};
+                                for (int k = 0; k < 4; k++) {
+                                    int code = want[k] ? (play ? kGame[k] : kMenu[k]) : 0;
+                                    if (held[k] != code) { if (held[k]) pk(held[k], false); if (code) pk(code, true); held[k] = code; }
+                                }
+                                break;
+                            }
                             case SDL_CONTROLLER_AXIS_RIGHTX: pk(37, v < -dead); pk(39, v > dead); break;
                             case SDL_CONTROLLER_AXIS_RIGHTY: pk(38, v < -dead); pk(40, v > dead); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: pk('E', v > 8000); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: pk(32, v > 8000); break;
+                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: pk('E', play && v > 8000); break;
+                            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: pk(32, play && v > 8000); break;
                         }
                         break;
                     }
@@ -828,6 +1124,8 @@ int main(int argc, char** argv) {
             }
 #ifdef __SWITCH__
             padPoll();
+            g_fullscreenRequest = -1;   // (always fullscreen)
+#elif defined(__ANDROID__)
             g_fullscreenRequest = -1;   // (always fullscreen)
 #else
             { int rq = g_fullscreenRequest.exchange(-1); if (rq >= 0) setFullscreen(rq == 1); }   // menu option or F key
@@ -841,12 +1139,28 @@ int main(int argc, char** argv) {
                 paceMs = (nowSec() - w0) * 1000.0;
             }   // at most one frame queued: less input-to-image latency
             if (preloading) {
-                size_t left = renderPreloadPending();
+                size_t left = renderPreloadPending(); preloadLeft = left;
                 inputBlocked = left > 0;
                 if (!left) { preloading = false; logf("preload finished in %.1f s (atlas: %d of %d pages)\n", nowSec() - preloadT0, renderAtlasPages(), std::max(4, g_renderCfg.cacheMB / 16)); }
             }
             if (nowSec() - lastLearnSave > 20) { lastLearnSave = nowSec(); saveLearned(preloadPath); }   // new graphics → preload.txt
             pollInput();
+            while (injectPos < inject.size() && inject[injectPos].tick <= g_player.tick) {   // (testing)
+                Inject& j = inject[injectPos++];
+                if (j.op == "down" || j.op == "move" || j.op == "up") {
+                    SDL_Event e{}; e.type = j.op == "down" ? SDL_FINGERDOWN : j.op == "move" ? SDL_FINGERMOTION : SDL_FINGERUP;
+                    e.tfinger.fingerId = j.id; e.tfinger.x = (float)j.x; e.tfinger.y = (float)j.y; SDL_PushEvent(&e);
+                } else if (j.op == "back") { SDL_Event e{}; e.type = SDL_KEYDOWN; e.key.keysym.sym = SDLK_AC_BACK; SDL_PushEvent(&e); }
+                else if (j.op == "shot") injectShot = j.arg;
+                else if (j.op == "eval") { std::lock_guard<std::mutex> lk(inMu); evalQ.push_back(j.arg); }
+                else if (j.op == "quit") running = false;
+            }
+            if (touchUI) touch.update(touchCtx(), nowSec());
+            {   // movement factor for the logic thread (joystick_acceleration): touch stick, else controller stick, else full
+                float tm = touchUI ? touch.moveAmount() : -1.f;
+                float k = !g_joyAccel ? 1.f : tm >= 0 ? moveCurve(tm, TouchControls::deadZone()) : padMove >= 0 ? moveCurve(padMove, 0.2f) : 1.f;
+                g_moveScale = k > 0 ? k : 1.f;
+            }
             double fstart = nowSec();
             if (fstart - lastRefreshCheck > 1.0) {   // the monitor may change (window moved)
                 lastRefreshCheck = fstart;
@@ -892,8 +1206,26 @@ int main(int argc, char** argv) {
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
             double r0 = nowSec();
             renderFrame(dw, dh, alpha);
+            if (touchUI) {
+                TouchStick ts[2]; if (touch.sticks(ts)) renderTouchSticks(ts, 2);
+#ifdef __SWITCH__
+                const bool handheld = appletGetOperationMode() == AppletOperationMode_Handheld;   // (docked: no touch screen)
+#else
+                const bool handheld = true;
+#endif
+                if (handheld && cur && cur->gameplay && (cur->touchMask & 8)) {   // pause button next to -LIFE-
+                    Mat m = stageToWindowFor(dw, dh); const float* r = cur->touchRects[3]; double x0, y0, x1, y1;
+                    m.apply(r[0], r[1], x0, y0); m.apply(r[2], r[3], x1, y1);
+                    renderPauseButton(x0, y0, x1, y1);
+                }
+            }
+            if (inputBlocked && preloadTotal && blockedTouchAt > 0 && nowSec() - blockedTouchAt < 4) {   // "why doesn't it react?"
+                size_t left = std::min(preloadTotal, preloadLeft);
+                renderHint("LOADING " + std::to_string((int)(100 * (preloadTotal - left) / preloadTotal)) + "%");
+            }
             if (perfOn) renderOverlay(perfLines);
             renderEndFrame();
+            if (!injectShot.empty()) { renderScreenshot(injectShot.c_str()); injectShot.clear(); }
             double r1 = nowSec();
             SDL_GL_SwapWindow(win);
             if (vsyncOn && cfg.gpuSync) {
@@ -908,6 +1240,36 @@ int main(int argc, char** argv) {
             else if (pace) renderPaceAfterSwap();
             double r2 = nowSec();
             double frameInterval = r2 - lastSwap; lastSwap = r2; renderedFrames++;
+#ifdef __ANDROID__
+            // automatic resolution (render_height = 0): if gameplay stays below ~53 fps for 10 s while the frame time
+            // goes to drawing / waiting for the GPU (not to a late game tick), render at a lower resolution. Remembered
+            // in isaac.ini (auto_height) so the next launch starts there. Only ever goes down.
+            if (cfg.renderHeight == 0 && !preloading) {
+                static double winT = 0, busy = 0, lastDrop = 0; static int frames = 0, heldN = 0, bad = 0;
+                const Snapshot* cs2 = renderCurrent();
+                if (cs2 && cs2->gameplay && frameInterval < 0.25) {
+                    frames++; winT += frameInterval; busy += (r1 - r0) + paceMs / 1000.0; if (held) heldN++;
+                    if (winT >= 5.0) {
+                        double fps = frames / winT, load = busy / frames / period;
+                        bool slow = fps < refresh * 0.88 && load > 0.75 && heldN < frames / 4;
+                        bad = slow ? bad + 1 : 0;
+                        if (bad >= 2 && nowSec() - lastDrop > 20) {
+                            static const int ladder[] = {720, 600, 540, 480};
+                            int w2, h2; SDL_GL_GetDrawableSize(win, &w2, &h2);
+                            int next = 0; for (int L : ladder) if (L < h2 - 8) { next = L; break; }
+                            if (next) {
+                                logf("automatic resolution: %.0f fps at %d lines (load %.2f) -> %d\n", fps, h2, load, next);
+                                javaVoidInt("setRenderHeight", next);
+                                saveIniValue(iniPath, "auto_height", std::to_string(next));
+                                lastDrop = nowSec();
+                            }
+                            bad = 0;
+                        }
+                        frames = 0; heldN = 0; winT = busy = 0;
+                    }
+                }
+            }
+#endif
             // if the driver ignores vsync, switch to limiting frames manually
             static double ema = 0; ema = ema == 0 ? frameInterval : ema * 0.95 + frameInterval * 0.05;
             if (vsyncOn && renderedFrames > 120 && ema < period * 0.6) { vsyncOn = false; logf("vsync not effective: limiting to %.0f fps\n", refresh); }
@@ -915,10 +1277,10 @@ int main(int argc, char** argv) {
             if (perfOn) {
                 double fms = frameInterval * 1000.0, rms = (r1 - r0) * 1000.0, sms = (r2 - r1) * 1000.0;
                 pw.frames++; pw.frameMax = std::max(pw.frameMax, fms); pw.render += rms; pw.renderMax = std::max(pw.renderMax, rms); pw.swap += sms + paceMs;
-                pw.rasters += g_rstats.rasters; pw.rasterMs += g_rstats.rasterMs; pw.upMB += g_rstats.uploadMB; pw.tex += g_rstats.texCreates;
+                pw.rasters += g_rstats.rasters; pw.rasterMs += g_rstats.rasterMs; pw.upMB += g_rstats.uploadMB; pw.upMs += g_rstats.uploadMs; pw.tex += g_rstats.texCreates;
                 pw.adopt += g_rstats.adoptMs; pw.compile += g_rstats.compileMs; pw.exec += g_rstats.execMs + g_rstats.prerasterMs; pw.pending += g_rstats.asyncPending;
                 pw.other += std::max(0.0, (r0 - fstart) * 1000.0 - g_rstats.adoptMs);   // events, controller, etc.
-                pw.nodes = g_rstats.nodes; pw.quads += g_rstats.quads; pw.draws += g_rstats.draws;
+                pw.nodes = g_rstats.nodes; pw.quads += g_rstats.quads; pw.draws += g_rstats.draws; pw.filters += g_rstats.filters; pw.fhits += g_rstats.filterHits;
                 if (held) pw.held++;
                 bool slow = fms > period * 1000.0 * 1.5;
                 if (slow) {
@@ -935,10 +1297,10 @@ int main(int argc, char** argv) {
                     snprintf(l[0], 200, "FPS %.0f (%.0f HZ)  MAX FRAME %.1f MS  HITCHES %d  HELD %d", fps, refresh, pw.frameMax, pw.slow, pw.held);
                     snprintf(l[1], 200, "LOGIC %.2f MS (MAX %.1f)  %d TICKS/S  MARGIN %.1f MS", lg, pw.logicMax, (int)(pw.ticks / std::max(1e-3, secs) + 0.5), delta * 1000);
                     snprintf(l[2], 200, "RENDER %.2f MS (MAX %.1f)  GPU/VSYNC WAIT %.1f MS", rd, pw.renderMax, sw);
-                    snprintf(l[3], 200, "RASTER %d (%.1f MS)  UPLOAD %.1f MB  NEW TEX %d  GC %.1f MS  ENT %d", pw.rasters, pw.rasterMs, pw.upMB, pw.tex, gc, pw.ent);
+                    snprintf(l[3], 200, "RASTER %d (%.1f MS)  UPLOAD %.1f MB (%.1f MS)  NEW TEX %d  GC %.1f MS  ENT %d", pw.rasters, pw.rasterMs, pw.upMB, pw.upMs, pw.tex, gc, pw.ent);
                     int nf = std::max(1, pw.frames);
-                    snprintf(l[4], 200, "ADOPT %.2f  COMPILE %.2f  DRAW %.2f  OTHER %.2f MS | %d NODES %d QUADS %d DRAWS  PEND %d",
-                             pw.adopt / nf, pw.compile / nf, pw.exec / nf, pw.other / nf, pw.nodes, pw.quads / nf, pw.draws / nf, pw.pending);
+                    snprintf(l[4], 200, "ADOPT %.2f  COMPILE %.2f  DRAW %.2f  OTHER %.2f MS | %d NODES %d QUADS %d DRAWS %d BLURS (%d REDONE)  PEND %d",
+                             pw.adopt / nf, pw.compile / nf, pw.exec / nf, pw.other / nf, pw.nodes, pw.quads / nf, pw.draws / nf, pw.filters / nf, (pw.filters - pw.fhits) / nf, pw.pending);
                     perfLines.assign(l, l + 5);
                     if (pw.frames > 1) { char b[1200]; snprintf(b, sizeof b, "%s | %s | %s | %s | %s\n", l[0], l[1], l[2], l[3], l[4]); perfLog(b); }
                     pw = PerfWin(); pwStart = nowSec();
@@ -979,6 +1341,8 @@ int main(int argc, char** argv) {
     if (fl::g_restartRequest) {   // ("Delete save": start over with the save deleted)
 #ifdef __SWITCH__
         if (envHasNextLoad() && argc > 0) { std::string a0 = std::string(argv[0]) + " --game " + gameTag; envSetNextLoad(argv[0], a0.c_str()); }
+#elif defined(__ANDROID__)
+        javaVoid("restartApp", gameTag.c_str());   // (relaunches the activity with --game <tag>)
 #elif defined(_WIN32)
         char exe[MAX_PATH]; GetModuleFileNameA(nullptr, exe, MAX_PATH);
         STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
@@ -989,5 +1353,13 @@ int main(int argc, char** argv) {
         execv("/proc/self/exe", av.data());
 #endif
     }
+#ifdef __ANDROID__
+    // Android may reuse this process for the next launch, and the runtime's globals would not start clean. _exit,
+    // not exit: helper threads are still alive, and running static destructors under them crashed
+    // ("pthread_mutex_lock called on a destroyed mutex").
+    platformStopThreads(); SDL_Delay(100);
+    fflush(nullptr);
+    _exit(0);
+#endif
     return 0;
 }

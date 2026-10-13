@@ -3,7 +3,8 @@ THE BINDING OF ISAAC — native version (C++ recomp)
 
 This is a static recompilation of the Flash game to C++: all of the ActionScript code has
 been translated into compiled C++, and Flash Player has been replaced by a custom native
-engine (SDL2 + OpenGL 3.3). There is no Flash interpreter and no Ruffle inside.
+engine (SDL2 + OpenGL 3.3, or OpenGL ES 3.0 on Android). There is no Flash interpreter
+and no Ruffle inside.
 
 All three versions of the Flash game available on Steam are supported, each with its own
 recompiled code:
@@ -71,7 +72,8 @@ the active item, Q for card/pill, P or Esc to pause.
 - F3: performance diagnostics (see below).
 Controller (XInput / SDL): left stick or D-pad = move; right stick or A/B/X/Y = shoot;
 LB or left trigger = bomb; RB or right trigger = active item; right stick click = card/
-pill (Q); left stick click = pause (P); Start = Enter; Back = Esc.
+pill (Q); Start, Back or left stick click = pause. In menus and in the pause screen:
+D-pad or left stick = choose, A = confirm, B = back, Start = Enter.
 
 THE isaac.ini FILE
 ------------------
@@ -92,6 +94,15 @@ Created automatically next to the executable the first time you run it.
                       stop or turn). The game logic is never affected.
   game = wotl         last version played (og, wotl or eternal; the old key
                       "juego" is still accepted)
+  performance = 0     1 = performance diagnostics always on (same as F3, see below)
+  touch_controls = 1  (Android, Switch) 0 turns off the touch joysticks, HUD taps and the
+                      pause button (touch then only works in menus)
+  render_height = 0   (Android only) rendering resolution, 0 = automatic (see ANDROID)
+  joystick_acceleration = 1
+                      analog movement: with a stick (touch, controller, Switch) the
+                      speed depends on how far you push it, from 40% just past the
+                      dead zone to full speed at 3/4 of the way (never faster than the
+                      original). 0 = always full speed, as in the original game
 
 IF YOU NOTICE STUTTERING OR SLOWDOWNS: F3
 -----------------------------------------
@@ -112,17 +123,66 @@ and one line per stutter, with its breakdown). If something runs slowly, play th
 problem room for a while with F3 on and send that file: it shows exactly which part is
 taking the time.
 
+ANDROID
+-------
+Needs a 64-bit ARM phone or tablet (practically all of them since 2017) with Android 7.0
+or newer and OpenGL ES 3.0.
+1. Install IsaacRecomp.apk (allow "install unknown apps" for your browser or file
+   manager when Android asks).
+2. Create a folder called IsaacRecomp at the root of the internal storage (next to
+   Download, DCIM...) and copy Isaac.exe from the game's Steam folder into it. Several
+   versions work as on PC (different names, a menu to choose).
+3. Open Isaac Recomp. The first time it asks for "All files access" (Android 11 and
+   newer) or for access to your files: the game, isaac.ini, the saves and log.txt all
+   live in that folder.
+Touch controls: put a finger on the left half of the screen to move and on the right
+half to shoot; a joystick appears where the finger lands, stays there while you slide
+it, and disappears when you lift it (how far you push the left one sets your speed, see
+joystick_acceleration). Tap the bomb counter to drop a bomb, the "SPACE"
+box to use the active item and the pill/card (top right, when you have one) to use it.
+The pause button sits right of "-LIFE-"; the back button/gesture also pauses (and goes
+back in menus). In menus, tap the options; on screens without options (cutscenes,
+title cards) a tap continues. While the game is still loading its graphics (the first
+seconds, during the opening cutscene) touches are ignored; touching shows the progress.
+Bluetooth or USB controllers work as on PC (see CONTROLS); the joysticks only appear
+when you touch the screen.
+Performance diagnostics: set performance = 1 in IsaacRecomp/isaac.ini; the overlay
+appears and IsaacRecomp/performance.txt is written.
+The game runs at 960x720 (like on Switch), scaled to the screen with black bars. To keep
+60 fps it renders at 720 lines and, if the device still can't keep up during play, goes
+down to 600, 540 or 480 by itself (remembered in isaac.ini as auto_height). To choose
+yourself, set render_height in isaac.ini (e.g. 1080 for the sharpest image, 480 for the
+fastest); 0 = automatic.
+
 SAVE DATA
 ---------
 The game is saved when you quit (and whenever the game asks for it) in:
   Windows: %APPDATA%\IsaacRecomp\WrathOfTheLamb\
   Linux:   ~/.local/share/IsaacRecomp/WrathOfTheLamb/
+  Android: the IsaacRecomp folder in the internal storage
 with one file per version: isaac_og_save.sol (original), isaac_save.sol (Wrath of the
 Lamb) and isaac_eternal_save.sol (Eternal Edition).
 The same folder also holds log.txt (program messages from the last session) and
 preload.txt / preload_og.txt / preload_eternal.txt (graphics learned on this machine;
 older precarga*.txt files are merged in automatically).
 Not compatible with Flash save data: unlocks start from scratch.
+
+CHANGES IN VERSION 11 (v1.2.0 public release numbering)
+-------------------------------------------------------
+- New: Android version (see ANDROID): touch controls with two floating joysticks and
+  taps on the HUD, Bluetooth controllers, OpenGL ES renderer.
+- Controllers: menus and the pause screen can now be used with the controller alone
+  (A confirms, B goes back, D-pad/left stick choose), as on Switch. Start/Back pause.
+- New isaac.ini option: performance = 1 turns the performance diagnostics on at startup.
+- Analog movement (joystick_acceleration = 1, on by default): with a stick (touch,
+  controller, Switch) the speed follows how far you push it, like in Rebirth. Full
+  speed is reached at 3/4 of the stick's travel and is never above the original.
+  Keyboard and D-pad are unchanged.
+- Switch: in handheld mode the touch screen now works during play too: the same
+  floating joysticks and HUD taps as on Android, plus a pause button next to -LIFE-
+  (see README_SWITCH.txt). The .nro shows version 1.2.0.
+- Audio: sound is now mixed directly at the output device's sample rate with smoother
+  (cubic) interpolation, instead of being resampled twice. Cleaner high frequencies.
 
 CHANGES IN VERSION 10 (v1.1.0 public release numbering)
 -------------------------------------------------

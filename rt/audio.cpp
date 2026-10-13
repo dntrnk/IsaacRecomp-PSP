@@ -1,5 +1,6 @@
 // Audio mixer: MP3 decoded in streaming fashion (dr_mp3) from the SWF data.
 #include "display.h"
+#include "platform.h"
 #include <SDL.h>
 #include <functional>
 #include <algorithm>
@@ -13,6 +14,7 @@ extern float g_masterVolume;
 float g_audioVolume = 1.0f;   // global volume from the settings
 
 static const int kRate = 44100;
+static int g_rate = kRate;   // output rate: the device's own (Android: usually 48 kHz), 44.1 kHz in tests
 struct Chan {
     bool active = false;
     drmp3 dec; bool decOk = false;
@@ -22,6 +24,7 @@ struct Chan {
     float vol = 1, pan = 0;
     int srcRate = kRate, srcCh = 1;
     double pos = 0;                 // fractional position in the source buffer
+    bool eof = false;               // no more source data: play out what is left in buf
     float buf[2][4096]; int bufLen = 0; int bufBase = 0;   // decoded samples (per channel)
     uint64_t framesConsumed = 0;    // source frames consumed since startFrame (for position)
     int gen = 0;
@@ -36,7 +39,7 @@ void audioUnlock() { if (g_dev) SDL_UnlockAudioDevice(g_dev); }
 static bool chanSeek(Chan& c, uint64_t frame) {
     if (!c.decOk) return false;
     bool ok = drmp3_seek_to_pcm_frame(&c.dec, frame) != 0;
-    c.bufLen = 0; c.pos = 0; c.framesConsumed = frame >= c.startFrame ? frame - c.startFrame : 0;
+    c.bufLen = 0; c.pos = 0; c.eof = false; c.framesConsumed = frame >= c.startFrame ? frame - c.startFrame : 0;
     return ok;
 }
 static void chanFree(Chan& c) { if (c.decOk) drmp3_uninit(&c.dec); c.decOk = false; c.active = false; c.owner = nullptr; c.def = nullptr; c.stream = nullptr; }
@@ -69,24 +72,31 @@ static void mix(void*, Uint8* stream, int len) {
     float master = g_masterVolume * g_audioVolume;
     for (auto& c : g_chans) {
         if (!c.active) continue;
-        double step = (double)c.srcRate / kRate;
+        double step = (double)c.srcRate / g_rate;
         float lv = c.vol * master * (c.pan > 0 ? 1 - c.pan : 1), rv = c.vol * master * (c.pan < 0 ? 1 + c.pan : 1);
         for (int i = 0; i < frames; i++) {
-            while (c.pos >= c.bufLen - 1) {
-                // keep the last sample for interpolation
-                float l0 = c.bufLen ? c.buf[0][c.bufLen - 1] : 0, r0 = c.bufLen ? c.buf[1][c.bufLen - 1] : 0;
-                double over = c.bufLen ? c.pos - (c.bufLen - 1) : c.pos;
-                c.framesConsumed += c.bufLen ? c.bufLen - 1 : 0;
-                if (!refill(c)) { c.active = false; break; }
-                // shift: insert l0/r0 at the start
-                memmove(&c.buf[0][1], &c.buf[0][0], sizeof(float) * c.bufLen); memmove(&c.buf[1][1], &c.buf[1][0], sizeof(float) * c.bufLen);
-                c.buf[0][0] = l0; c.buf[1][0] = r0; c.bufLen++;
-                c.pos = over;
+            // keep 3 samples of history across refills: the cubic interpolation reads one before and two after
+            while (!c.eof && c.pos >= c.bufLen - 2) {
+                int k = std::min(3, c.bufLen);
+                float hl[3], hr[3];
+                for (int q = 0; q < k; q++) { hl[q] = c.buf[0][c.bufLen - k + q]; hr[q] = c.buf[1][c.bufLen - k + q]; }
+                int oldLen = c.bufLen;
+                c.framesConsumed += oldLen - k;   // (before refill: a loop restart resets it)
+                if (!refill(c)) { c.framesConsumed -= oldLen - k; c.eof = true; break; }   // (buf untouched: the tail is still played)
+                memmove(&c.buf[0][k], &c.buf[0][0], sizeof(float) * c.bufLen); memmove(&c.buf[1][k], &c.buf[1][0], sizeof(float) * c.bufLen);
+                for (int q = 0; q < k; q++) { c.buf[0][q] = hl[q]; c.buf[1][q] = hr[q]; }
+                c.bufLen += k;
+                c.pos -= oldLen - k;
             }
-            if (!c.active) break;
-            int ip = (int)c.pos; float fr = (float)(c.pos - ip);
-            float l = c.buf[0][ip] + (c.buf[0][ip + 1] - c.buf[0][ip]) * fr;
-            float r = c.buf[1][ip] + (c.buf[1][ip + 1] - c.buf[1][ip]) * fr;
+            if (c.eof && c.pos >= c.bufLen - 1) { c.active = false; break; }
+            int ip = (int)c.pos; float t = (float)(c.pos - ip);
+            int im = ip > 0 ? ip - 1 : 0, i2 = std::min(ip + 2, c.bufLen - 1);
+            // Catmull-Rom (cubic Hermite): noticeably cleaner than linear when 11/22 kHz sounds are upsampled
+            auto cr = [t](float pm, float p0, float p1, float p2) {
+                return p0 + 0.5f * t * (p1 - pm + t * (2 * pm - 5 * p0 + 4 * p1 - p2 + t * (3 * (p0 - p1) + p2 - pm)));
+            };
+            float l = cr(c.buf[0][im], c.buf[0][ip], c.buf[0][ip + 1], c.buf[0][i2]);
+            float r = cr(c.buf[1][im], c.buf[1][ip], c.buf[1][ip + 1], c.buf[1][i2]);
             out[i * 2] += l * lv; out[i * 2 + 1] += r * rv;
             c.pos += step;
         }
@@ -98,9 +108,12 @@ static void mix(void*, Uint8* stream, int len) {
 void audioInit(bool device) {
     if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
     SDL_AudioSpec want{}, have{};
-    want.freq = kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = 1024; want.callback = mix;
-    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    // mix directly at the device's rate (one resampling step instead of ours + SDL's conversion)
+    want.freq = kIsAndroid ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = kIsAndroid ? 512 : 1024; want.callback = mix;   // (Android: ~11 ms)
+    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (!g_dev) { logf("audio: %s\n", SDL_GetError()); return; }
+    if (have.freq >= 8000 && have.freq <= 192000) g_rate = have.freq;
+    logf("audio: %s, %d Hz, %d channels, %d-sample buffer\n", SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.channels, have.samples);
     SDL_PauseAudioDevice(g_dev, 0);
     g_rootTracers.push_back([](Tracer& tr) { audioLock(); for (auto& c : g_chans) if (c.active) tr.mark(c.owner); audioUnlock(); });
 }
@@ -124,7 +137,7 @@ int soundStart(SoundDef* s, double offsetSec, int loops, Object* owner, float vo
     c->skip = s->seek > 0 ? (uint64_t)s->seek : 0;
     c->startFrame = c->skip + (uint64_t)std::max(0.0, offsetSec * c->srcRate);
     if (c->startFrame) chanSeek(*c, c->startFrame);
-    c->bufLen = 0; c->pos = 0; c->framesConsumed = 0;
+    c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0;
     c->active = true; c->gen = ++g_genCounter;
     int idx = (int)(c - g_chans);
     audioUnlock();
@@ -141,7 +154,7 @@ int streamStart(StreamInfo* st, int frame0, Object* owner) {
     c->srcRate = (int)c->dec.sampleRate; c->srcCh = (int)c->dec.channels; c->skip = 0;
     c->startFrame = 0;
     uint64_t target = frame0 < (int)st->frameSample.size() ? st->frameSample[frame0] : 0;
-    if (target) chanSeek(*c, target); else { c->bufLen = 0; c->pos = 0; c->framesConsumed = 0; }
+    if (target) chanSeek(*c, target); else { c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0; }
     c->active = true; c->gen = ++g_genCounter;
     int idx = (int)(c - g_chans);
     audioUnlock();

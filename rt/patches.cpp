@@ -3,6 +3,7 @@
 //  - options menu without the options that depended on Zinc/Flash and do nothing here.
 #include "display.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <atomic>
@@ -50,6 +51,44 @@ Value mdmDeleteFile(Act&, Value, int argc, Value* argv) {
     return VUNDEF;
 }
 static bool g_fsSynced = false;
+
+// ---- analog movement ("joystick_acceleration"): the three games read movement in dirkey(false), which turns the
+// pressed keys into xenf/yenf = -1/0/+1; that value then accelerates the player. Our native wrapper calls the
+// original and scales xenf/yenf by g_moveScale (set by the input code from how far the stick is pushed): less push,
+// less acceleration and a lower top speed; 1 = exactly the original movement (keyboard, D-pad, stick fully out).
+std::atomic<float> g_moveScale{1.f};
+bool g_joyAccel = true;
+static Function* g_dirkeyOrig = nullptr;
+static Function* g_dirkeyWrap = nullptr;
+static Value dirkeyWrap(Act& a, Value thisv, int argc, Value* argv) {
+    Value r = g_dirkeyOrig ? callValue(a, Value((Object*)g_dirkeyOrig), thisv, argc, argv) : VUNDEF;
+    float k = g_moveScale.load();
+    if (k < 0.999f && !(argc > 0 && truthy(argv[0]))) {   // dirkey(false) = movement (true = shooting)
+        Value clip = getMemK(Value((Object*)vm.root), intern("a"));
+        if (clip.isObj()) {
+            static Str* sx = intern("xenf"); static Str* sy = intern("yenf");
+            Value x = getMemK(clip, sx), y = getMemK(clip, sy);
+            if (x.t == T_NUM && x.n != 0) setMemK(clip, sx, Value(x.n * k));
+            if (y.t == T_NUM && y.n != 0) setMemK(clip, sy, Value(y.n * k));
+        }
+    }
+    return r;
+}
+static void installMoveScale() {
+    if (!g_joyAccel) return;
+    static const char* test = getenv("ISAAC_MOVESCALE"); if (test) g_moveScale = (float)atof(test);   // (testing)
+    Value clip = getMemK(Value((Object*)vm.root), intern("a"));
+    if (!clip.isObj()) return;
+    static Str* name = intern("dirkey");
+    Value f = getMemK(clip, name);
+    if (!f.isObj() || f.o->kind != OK_FUNCTION || f.o == (Object*)g_dirkeyWrap) return;
+    if (!g_dirkeyWrap) {
+        g_dirkeyWrap = gcNew<Function>(); g_dirkeyWrap->proto = protos::function; g_dirkeyWrap->nat = dirkeyWrap; g_dirkeyWrap->dbgName = "dirkey (analog)"; gcPin(g_dirkeyWrap);
+        gcAddRoot((GcObj**)&g_dirkeyOrig);
+    }
+    g_dirkeyOrig = (Function*)f.o;
+    setMemK(clip, name, Value((Object*)g_dirkeyWrap));
+}
 Value mdmFull(Act&, Value, int argc, Value* argv) {
     // at startup the game applies its saved setting: isaac.ini's takes precedence (and is synced in recompPatchesTick)
     if (g_fsSynced) { g_fullscreenRequest = argc > 0 && truthy(argv[0]) ? 1 : 0; if (g_trace) logf("[mdm] showFullScreen(%d)\n", g_fullscreenRequest.load()); }
@@ -142,6 +181,7 @@ static void tweakOptions(MovieClip* p) {
 // every tick, after the logic
 void recompPatchesTick() {
     Value root((Object*)vm.root);
+    installMoveScale();
     if (!g_fsSynced && g_player.tick >= 2) {   // the menu's "FullScreen" checkbox reflects the actual state
         Value so = getMemK(root, intern("so"));
         Value data = so.isObj() ? getMemK(so, intern("data")) : VUNDEF;
@@ -164,6 +204,39 @@ bool recompInGameplay(bool* inGame) {
     bool g = a.isObj() && getMemK(a, intern("player")).isObj();
     if (inGame) *inGame = g;
     return g && truthy(getMemK(a, intern("unpause")));
+}
+// Touch screens: where the HUD shows the bomb counter, the active item and the pill/card (stage
+// coordinates, a little enlarged for fingers). Bit i of the result = target i is on screen. The three games share
+// the HUD layout: hud.cacher (coins / bombs / keys, one row each), hud.it ("SPACE" box) and hud.extra (only
+// visible while holding a pill or card).
+int recompTouchTargets(float out[4][4]) {
+    Value hud = getMemK(Value((Object*)vm.root), intern("hud"));
+    if (!hud.isObj() || !hud.o->isDisplay() || !((DisplayObject*)hud.o)->visible) return 0;
+    int mask = 0;
+    auto rect = [&](const char* name, bool needVisible, RectF& r) {
+        Value v = getMemK(hud, intern(name));
+        if (!v.isObj() || !v.o->isDisplay()) return false;
+        DisplayObject* d = (DisplayObject*)v.o;
+        if (needVisible && !d->visible) return false;
+        r = stageBounds(d);
+        return r.valid();
+    };
+    RectF r; double pad = g_stageW / 120.0;   // (~1% of the stage width)
+    if (rect("cacher", false, r)) {   // middle row; the count text sits to the right of the icon
+        double h = (r.y1 - r.y0) / 3, w = r.x1 - r.x0;
+        out[0][0] = (float)(r.x0 - pad); out[0][1] = (float)(r.y0 + h - pad * 0.3);
+        out[0][2] = (float)(r.x0 + w * 2.8 + pad); out[0][3] = (float)(r.y0 + 2 * h + pad * 0.3); mask |= 1;
+    }
+    if (rect("it", false, r)) { out[1][0] = (float)(r.x0 - pad); out[1][1] = (float)(r.y0 - pad); out[1][2] = (float)(r.x1 + pad); out[1][3] = (float)(r.y1 + pad); mask |= 2; }
+    if (rect("extra", true, r)) { out[2][0] = (float)(r.x0 - pad); out[2][1] = (float)(r.y0 - pad); out[2][2] = (float)(r.x1 + pad); out[2][3] = (float)(r.y1 + pad); mask |= 4; }
+    // pause button (drawn by the renderer, not part of the game): in the empty corner right of "-LIFE-",
+    // 28 units square in the game's 640x480 space, mapped through _root's matrix (HD scale and offset)
+    {
+        double rx0 = 588, ry0 = 4, rx1 = 616, ry1 = 32, x0, y0, x1, y1;
+        vm.root->m.apply(rx0, ry0, x0, y0); vm.root->m.apply(rx1, ry1, x1, y1);
+        out[3][0] = (float)x0; out[3][1] = (float)y0; out[3][2] = (float)x1; out[3][3] = (float)y1; mask |= 8;
+    }
+    return mask;
 }
 // the player toggled fullscreen with F11 / Alt+Enter (logic thread)
 void recompFullscreenChanged(bool full) {
