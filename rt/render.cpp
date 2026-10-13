@@ -47,6 +47,7 @@ typedef void (APIENTRY *PFNGLCLEARSTENCILPROC)(GLint);
 typedef GLboolean (APIENTRY *PFNGLISENABLEDPROC)(GLenum);
 typedef GLenum (APIENTRY *PFNGLGETERRORPROC)(void);
 typedef void (APIENTRY *PFNGLFINISHPROC)(void);
+typedef void (APIENTRY *PFNGLFLUSHPROC_)(void);
 typedef void (APIENTRY *PFNGLREADPIXELSPROC)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
 #define GLFUNCS(X) \
     X(PFNGLGENTEXTURESPROC, GenTextures) X(PFNGLDELETETEXTURESPROC, DeleteTextures) X(PFNGLBINDTEXTUREPROC, BindTexture) \
@@ -68,7 +69,7 @@ typedef void (APIENTRY *PFNGLREADPIXELSPROC)(GLint, GLint, GLsizei, GLsizei, GLe
     X(PFNGLFRAMEBUFFERTEXTURE2DPROC, FramebufferTexture2D) X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, CheckFramebufferStatus) \
     X(PFNGLGENRENDERBUFFERSPROC, GenRenderbuffers) X(PFNGLBINDRENDERBUFFERPROC, BindRenderbuffer) X(PFNGLRENDERBUFFERSTORAGEPROC, RenderbufferStorage) \
     X(PFNGLFRAMEBUFFERRENDERBUFFERPROC, FramebufferRenderbuffer) X(PFNGLUNIFORM3FPROC, Uniform3f) X(PFNGLMAPBUFFERRANGEPROC, MapBufferRange) X(PFNGLUNMAPBUFFERPROC, UnmapBuffer) X(PFNGLISENABLEDPROC, IsEnabled) \
-    X(PFNGLDELETEFRAMEBUFFERSPROC, DeleteFramebuffers) X(PFNGLDELETERENDERBUFFERSPROC, DeleteRenderbuffers) X(PFNGLGETERRORPROC, GetError) X(PFNGLREADPIXELSPROC, ReadPixels) X(PFNGLFINISHPROC, Finish) \
+    X(PFNGLDELETEFRAMEBUFFERSPROC, DeleteFramebuffers) X(PFNGLDELETERENDERBUFFERSPROC, DeleteRenderbuffers) X(PFNGLGETERRORPROC, GetError) X(PFNGLREADPIXELSPROC, ReadPixels) X(PFNGLFINISHPROC, Finish) X(PFNGLFLUSHPROC_, Flush) \
     X(PFNGLFENCESYNCPROC, FenceSync) X(PFNGLCLIENTWAITSYNCPROC, ClientWaitSync) X(PFNGLDELETESYNCPROC, DeleteSync) X(PFNGLGETSTRINGPROC_, GetString)
 #define DECL(T, N) static T p_gl##N;
 GLFUNCS(DECL)
@@ -137,6 +138,7 @@ GLFUNCS(DECL)
 #define glGetError p_glGetError
 #define glReadPixels p_glReadPixels
 #define glFinish p_glFinish
+#define glFlush p_glFlush
 #define glFenceSync p_glFenceSync
 #define glClientWaitSync p_glClientWaitSync
 #define glDeleteSync p_glDeleteSync
@@ -306,7 +308,8 @@ static void texUploadImpl(GLuint tex, int x, int y, int w, int h, const uint32_t
     // the CPU in uncached memory (~40 MB/s; 20 MB on a room change cost half a second); from regular
     // memory it's much faster.
     size_t off = SIZE_MAX;
-    if (!kIsSwitch) { glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_pboRing.buf); off = g_pboRing.alloc(bytes); }
+    // (Android too: uploads through the PBO stalled the render thread, up to 100 ms per second for 0.2 MB)
+    if (!kIsSwitch && !kIsAndroid) { glBindBuffer(GL_PIXEL_UNPACK_BUFFER, g_pboRing.buf); off = g_pboRing.alloc(bytes); }
     if (off != SIZE_MAX) {
         void* dst = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, off, bytes, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
         if (dst) {
@@ -676,7 +679,15 @@ static GLsync g_paceFence[2] = {nullptr, nullptr}; static int g_paceIdx = 0;
 void renderPaceAfterSwap() {
     if (g_paceFence[g_paceIdx]) glDeleteSync(g_paceFence[g_paceIdx]);
     g_paceFence[g_paceIdx] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-
+    if (kIsAndroid) {
+        // Android hands out the next screen buffer only when the compositor frees one, and the driver waits for it at
+        // the frame's first draw - i.e. AFTER input was read (~14 ms per frame on the test phone). Touching the
+        // window surface right now moves that wait here, before the next frame reads input: same frame rate,
+        // fresher input. (The clear is overwritten by the next frame.)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+    }
     g_paceIdx ^= 1;
 }
 bool renderPaceWait(uint64_t timeoutNs) {

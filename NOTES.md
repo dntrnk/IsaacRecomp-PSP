@@ -232,7 +232,7 @@
   * taps blocked while preloading; touching shows "LOADING n%" (`renderHint`). `_exit` at the end (exit ran static
     destructors under live helper threads: FORTIFY "destroyed mutex"). Saves flushed on the logic thread when
     the app goes to the background.
-  * joysticks: radius 8.5% of the screen height, base fixed (knob clamps at the edge). Pause button right of
+  * joysticks: base fixed (radius back to 12% of the screen height, as in the first build) (knob clamps at the edge). Pause button right of
     "-LIFE-" (root rect 588,4-616,32; touch area +40%), drawn by `renderPauseButton`.
 - Testing on PC: `ISAAC_TOUCH=1`, `ISAAC_TOUCH_INJECT=file` (synthetic touches/back/eval/screenshots in the threaded
   loop), `ISAAC_INPUT_LOG=1`. Under Xvfb without an audio device the opening cutscene can end by itself early; from
@@ -245,3 +245,9 @@
   `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE` (48 kHz requested on Android) and we mix at its rate, with Catmull-Rom
   interpolation instead of linear (3 samples of history across refills; channel end timing and Sound.position
   unchanged, headless runs stay identical).
+- Third device test (input and sound lag). In gameplay DRAW was ~14 ms per frame with ~20 quads: the driver waits
+  for a free window buffer at the frame's first draw, after input was read. `renderPaceAfterSwap` now clears and
+  flushes the default framebuffer right after the swap on Android, so that wait happens before the next frame polls
+  input (same frame rate). Texture uploads go straight from memory on Android (the PBO path stalled: 0.2 MB/s cost
+  up to 100 ms/s). Audio: 512-sample buffer on Android, and CMake patches SDL 2.30's AAudio backend to request
+  `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` (SDL leaves that call unused; without it Android picks large buffers).

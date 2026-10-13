@@ -109,11 +109,11 @@ void audioInit(bool device) {
     if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
     SDL_AudioSpec want{}, have{};
     // mix directly at the device's rate (one resampling step instead of ours + SDL's conversion)
-    want.freq = kIsAndroid ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = 1024; want.callback = mix;
+    want.freq = kIsAndroid ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = kIsAndroid ? 512 : 1024; want.callback = mix;   // (Android: ~11 ms)
     g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (!g_dev) { logf("audio: %s\n", SDL_GetError()); return; }
     if (have.freq >= 8000 && have.freq <= 192000) g_rate = have.freq;
-    logf("audio: %d Hz, %d channels, %d-sample buffer\n", have.freq, have.channels, have.samples);
+    logf("audio: %s, %d Hz, %d channels, %d-sample buffer\n", SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.channels, have.samples);
     SDL_PauseAudioDevice(g_dev, 0);
     g_rootTracers.push_back([](Tracer& tr) { audioLock(); for (auto& c : g_chans) if (c.active) tr.mark(c.owner); audioUnlock(); });
 }

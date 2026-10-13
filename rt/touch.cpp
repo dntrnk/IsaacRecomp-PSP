@@ -62,7 +62,7 @@ void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, do
         Stick& s = st_[which];
         if (s.id != -1) return;   // that side already has a finger
         s.id = id; s.cx = s.kx = px; s.cy = s.ky = py;
-        s.r = std::max(32.0, std::min(200.0, std::min(c.winW, c.winH) * 0.085));
+        s.r = std::max(48.0, std::min(260.0, std::min(c.winW, c.winH) * 0.12));   // (size of the first Android build)
         steer(s, which, px, py);
         return;
     }
