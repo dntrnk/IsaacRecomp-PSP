@@ -167,6 +167,23 @@ preload.txt / preload_og.txt / preload_eternal.txt (graphics learned on this mac
 older precarga*.txt files are merged in automatically).
 Not compatible with Flash save data: unlocks start from scratch.
 
+CHANGES IN VERSION 12 (v1.3.0 public release numbering, in progress)
+--------------------------------------------------------------------
+- Hearts: with more than 12 hearts the -LIFE- display now switches to its smaller
+  24/48-heart layout as in the original, instead of the first hearts staying big and
+  overlapping the rest.
+- Tears no longer appear for an instant below Isaac's head and then jump up to it.
+- Controllers: holding the left stick or the D-pad while the game switched to a menu
+  (the boss "VS" screen, pause) could leave an arrow key pressed afterwards, so Isaac
+  kept shooting by himself and the shooting controls behaved oddly. Inputs from the
+  keyboard, touch and each part of the controller no longer interfere with each other.
+- Android: fixed choppy, "motor-like" sound on some devices (it went away while
+  recording the screen): most of every block of sound was being dropped.
+- Android: changing the audio output (headphones, Bluetooth) could crash and restart the
+  game; the sound now recovers instead.
+- Android: the bomb counter, active item, card/pill and pause buttons are easier to hit
+  on small and wide screens (the bomb row was only a couple of millimetres tall).
+
 CHANGES IN VERSION 11 (v1.2.0 public release numbering)
 -------------------------------------------------------
 - New: Android version (see ANDROID): touch controls with two floating joysticks and

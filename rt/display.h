@@ -21,7 +21,7 @@ struct DisplayObject : Object {
     Mat m;                                  // local matrix (px)
     double sx = 1, sy = 1, rotX = 0, rotY = 0;   // cached decomposition (rotation in radians)
     CX cx;
-    bool visible = true, scriptXform = false, removed = false, placedByScript = false, timelinePlaced = false;
+    bool visible = true, scriptXform = false, scriptColor = false, removed = false, placedByScript = false, timelinePlaced = false;
     int clipDepth = 0;
     uint16_t ratio = 0;
     int placeFrame = 0;

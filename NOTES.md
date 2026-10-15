@@ -269,3 +269,31 @@
   `TouchControls` as Android (sticks, HUD taps, menus as mouse + tap = Space). The old Switch-only path
   (`switchTouch`: menus only) remains for `touch_controls = 0`. The pause button is drawn only in handheld mode
   (`appletGetOperationMode`). The .nro metadata (nacptool) carries the author and version 1.2.0.
+
+## v1.3 fixes
+- HUD hearts (>12): the game recolors every heart each tick with `colorit` (`new Transform(mc).colorTransform =`), then
+  `hud.lif.gotoAndStop(2|3)` for the 24/48-heart layout, whose PlaceObject moves/shrinks h0..h11. We flagged the
+  colorTransform setter as "transformed by script" (as Ruffle does), which froze h0..h2's matrix: big hearts on top of
+  the small ones. The original Flash Player re-lays them out, so `Transform.colorTransform` now only sets
+  `scriptColor` (blocks the timeline's color, not its matrix). Determinism runs unchanged.
+- Tears: `create()` attaches the ball at (0,0) after the tick's movement code (`actions1` runs before `playc`); the
+  next tick moves it to Isaac and sets `d._y = dy` (-23, the tear's height). The renderer snapped the parent's
+  teleport but interpolated the child `d` from 0 to -23: the tear appeared low and rose. Now a teleported node's
+  subtree snaps with it (`NodeInterp::jumped`), and a node created at (0,0) in the previous tick that then moves is
+  treated as a teleport (`Snapshot::fresh`).
+- Stuck shooting: SDL controllers shared one `padKeys` map between the left stick (WASD in game, arrows in menus),
+  the right stick, buttons and triggers, and the left stick only re-mapped when it moved. Holding it into the boss VS
+  screen turned WASD into an arrow that stayed pressed once the fight began. Now every source goes through
+  `keySrc(src, code, down)` (a key is down while any source holds it); the left stick and held D-pad directions are
+  re-mapped when gameplay/menu changes (also on Switch for D-pad/StickL buttons). Focus loss / background clears the
+  mask and the controller state. `ISAAC_TOUCH_INJECT` gained `axis <n> <value>` and `button <n> <0|1>`.
+- Android audio: SDL 2.30's `aaudio_PlayDevice` writes with a 1 ms timeout and drops the rest of the block. With the
+  low-latency buffer full most of the time, most of each 512-frame block was lost (the "motor" sound; screen
+  recording re-routes the stream to a path with other timing, which hid it). CMake now patches it to write the whole
+  block (50 ms timeout, up to 4 tries; blocking is what paces SDL's audio thread) and to grow the buffer by one burst
+  on each new underrun (Oboe-style latency tuning). If re-opening the stream after an output change failed, SDL's next
+  write used a NULL stream and crashed (the app restarted): it now waits and retries every second. The manifest also
+  handles more configuration changes itself (density, font scale, touchscreen, color mode).
+- Touch HUD targets: on a wide phone the bomb row is ~2 mm tall and a tap just above/below it spawned the movement
+  stick. Targets are now tested in window pixels, grown to at least 13% of the screen height around their center,
+  nearest center wins.

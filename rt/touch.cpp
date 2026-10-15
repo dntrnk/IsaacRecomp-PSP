@@ -49,16 +49,30 @@ void TouchControls::steer(Stick& s, int which, double px, double py) {
 void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, double now) {
     double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
     if (c.gameplay) {
-        // HUD icons first
+        // HUD icons first. Tested in window pixels: on a wide phone the bomb row is only ~2 mm tall, so every
+        // target is grown to a minimum finger-sized square (13% of the screen height) around its center; where
+        // grown targets overlap, the nearest center wins.
         static const int kCodes[4] = {'E', 32, 'Q', 'P'};
+        const double minSz = std::min(c.winW, c.winH) * 0.13;
+        int best = -1; double bestD = 1e30;
         for (int i = 0; i < 4; i++) {
             if (!(c.mask & (1 << i))) continue;
             const float* r = c.rects[i];
-            float m = i == 3 ? (r[2] - r[0]) * 0.4f : 0;   // (the pause button is small: a more forgiving touch area)
-            if (sx >= r[0] - m && sx <= r[2] + m && sy >= r[1] - m && sy <= r[3] + m) {
-                for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[i]; h.since = now; h.up = false; press(h.code, true); return; }
-                return;
-            }
+            double x0, y0, x1, y1;
+            c.stageToWin.apply(r[0], r[1], x0, y0); c.stageToWin.apply(r[2], r[3], x1, y1);
+            if (x0 > x1) std::swap(x0, x1);
+            if (y0 > y1) std::swap(y0, y1);
+            double mx = i == 3 ? (x1 - x0) * 0.4 : 0;   // (the pause button is small: a more forgiving touch area)
+            x0 -= mx; x1 += mx; y0 -= mx; y1 += mx;
+            double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+            double hw = std::max((x1 - x0) / 2, minSz / 2), hh = std::max((y1 - y0) / 2, minSz / 2);
+            if (std::fabs(px - cx) > hw || std::fabs(py - cy) > hh) continue;
+            double d = std::hypot((px - cx) / hw, (py - cy) / hh);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (best >= 0) {
+            for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[best]; h.since = now; h.up = false; press(h.code, true); return; }
+            return;
         }
         int which = px < c.winW * 0.5 ? 0 : 1;
         Stick& s = st_[which];

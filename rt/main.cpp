@@ -675,7 +675,6 @@ int main(int argc, char** argv) {
     auto nowSec = [&]() { return (double)SDL_GetPerformanceCounter() / freq; };
     bool running = true; size_t scriptPos = 0; uint64_t renderedFrames = 0;
     std::vector<double> logicMs, renderMs, allocs; std::vector<int> ballCount;
-    std::map<int, bool> padKeys;
     // ---- performance diagnostics (F3): overlay + performance.txt in the saves folder
     bool perfOn = perfStart || cfg.performance; std::vector<std::string> perfLines;
     struct PerfWin { int frames = 0, ticks = 0, slow = 0, rasters = 0, held = 0, tex = 0, pending = 0; double frameMax = 0, logic = 0, logicMax = 0, render = 0, renderMax = 0, swap = 0, rasterMs = 0, upMB = 0, upMs = 0;
@@ -790,6 +789,25 @@ int main(int argc, char** argv) {
             if (inputBlocked && (ev.type == 0 || ev.type == 1 || ev.type == 4)) { if (ev.type != 1 || ev.code == 1) blockedTouchAt = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency(); return; }
             std::lock_guard<std::mutex> lk(inMu); inQ.push_back(ev);
         };
+        // Every input source (keyboard, touch, controller buttons, each stick, triggers, Switch pad...) presses game keys
+        // through here: a key is down while ANY source holds it, so one source letting go can't release (or leave
+        // pressed) a key another one still holds. (Before, a controller's left stick crossing into a menu - the boss
+        // "VS" screen - turned its WASD into arrows and kept an arrow pressed after the fight started: Isaac
+        // kept shooting by himself.)
+        enum { SRC_KEYBOARD, SRC_TOUCH, SRC_BUTTONS, SRC_LSTICK, SRC_RSTICK, SRC_TRIGGERS, SRC_SWITCHPAD, SRC_SYSTEM };
+        uint16_t keyMask[256] = {};
+        auto keySrc = [&](int src, int code, bool down, int ascii = 0) {
+            if (code <= 0 || code >= 256) return;
+            uint16_t old = keyMask[code], now = down ? (uint16_t)(old | (1u << src)) : (uint16_t)(old & ~(1u << src));
+            keyMask[code] = now;
+            if (!old != !now) pushIn({0, code, down ? ascii : 0, down, 0, 0});
+        };
+        std::function<void()> onReleaseAll;   // (controller state reset, set below)
+        auto releaseAllKeys = [&]() {   // focus lost / app to the background: nothing stays pressed
+            memset(keyMask, 0, sizeof keyMask);
+            if (onReleaseAll) onReleaseAll();
+            pushIn({2, 0, 0, false, 0, 0});
+        };
         std::string iniPath = base + "isaac.ini";
         auto setFullscreen = [&](bool full) {
             bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -885,8 +903,8 @@ int main(int argc, char** argv) {
                 double now = nowSec();
                 bool zr = (b & HidNpadButton_ZR) && play;
                 if (!zr) zrSince = -1; else if (zrSince < 0) zrSince = now;
-                if (zr && zrSince > 0 && now - zrSince >= 5.0 && rUntil < 0) { rUntil = now + 1.4; pushIn({0, 82, 0, true, 0, 0}); zrSince = 1e18; }
-                if (rUntil > 0 && now >= rUntil) { pushIn({0, 82, 0, false, 0, 0}); rUntil = -1; }
+                if (zr && zrSince > 0 && now - zrSince >= 5.0 && rUntil < 0) { rUntil = now + 1.4; keySrc(SRC_SYSTEM, 82, true); zrSince = 1e18; }
+                if (rUntil > 0 && now >= rUntil) { keySrc(SRC_SYSTEM, 82, false); rUntil = -1; }
                 if (!zr && zrSince < 0 && rUntil < 0) {}
             }
             // analog movement (joystick_acceleration): in gameplay the left stick is read as a vector (round dead zone,
@@ -909,22 +927,30 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < 4; k++) {
                     int code = want[k] ? kGame[k] : 0;
                     if (held4[k] == code) continue;
-                    if (held4[k] && --keyRefs[held4[k]] == 0) pushIn({0, held4[k], 0, false, 0, 0});
-                    if (code && keyRefs[code]++ == 0) pushIn({0, code, 0, true, 0, 0});
+                    if (held4[k] && --keyRefs[held4[k]] == 0) keySrc(SRC_SWITCHPAD, held4[k], false);
+                    if (code && keyRefs[code]++ == 0) keySrc(SRC_SWITCHPAD, code, true);
                     held4[k] = code;
                 }
             }
             for (size_t i = 0; i < sizeof(kPadMap) / sizeof(kPadMap[0]); i++) {
                 const u64 stickL = HidNpadButton_StickLLeft | HidNpadButton_StickLRight | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
                 bool down = (b & kPadMap[i].btn) != 0 && !(analog && (kPadMap[i].btn & stickL));
-                if (down && !padHeld[i]) {
+                if (down && padHeld[i] && (kPadMap[i].game == 'A' || kPadMap[i].game == 'D' || kPadMap[i].game == 'W' || kPadMap[i].game == 'S')) {
+                    // a direction held while the game switches between playing and a menu: its key follows the mode
+                    int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
+                    if (k && k != padHeld[i]) {
+                        if (--keyRefs[padHeld[i]] == 0) keySrc(SRC_SWITCHPAD, padHeld[i], false);
+                        padHeld[i] = k;
+                        if (keyRefs[k]++ == 0) keySrc(SRC_SWITCHPAD, k, true);
+                    }
+                } else if (down && !padHeld[i]) {
                     int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
                     if (!k) continue;
                     padHeld[i] = k;
-                    if (keyRefs[k]++ == 0) pushIn({0, k, (k == 32 || k == 13 || k == 27) ? k : 0, true, 0, 0});
+                    if (keyRefs[k]++ == 0) keySrc(SRC_SWITCHPAD, k, true, (k == 32 || k == 13 || k == 27) ? k : 0);
                 } else if (!down && padHeld[i]) {
                     int k = padHeld[i]; padHeld[i] = 0;
-                    if (--keyRefs[k] == 0) pushIn({0, k, 0, false, 0, 0});
+                    if (--keyRefs[k] == 0) keySrc(SRC_SWITCHPAD, k, false);
                 }
             }
         };
@@ -944,7 +970,7 @@ int main(int argc, char** argv) {
         const bool pace = vsyncOn && !cfg.gpuSync && cfg.lowLatency;   // (with gpu_sync we already wait for the whole GPU)
         // ---- touch screen (Android, Switch handheld; on PC with touch_controls = 1): joysticks, HUD taps, menus (touch.h)
         TouchControls touch({
-            [&](int code, bool down) { pushIn({0, code, down && code == 32 ? 32 : 0, down, 0, 0}); },
+            [&](int code, bool down) { keySrc(SRC_TOUCH, code, down, code == 32 ? 32 : 0); },
             [&](int type, double sx, double sy) { pushIn({1, type, 0, false, sx, sy}); },
             [&](double sx, double sy) { pushIn({4, 0, 0, false, sx, sy}); }});
         auto touchCtx = [&]() {
@@ -971,28 +997,66 @@ int main(int argc, char** argv) {
         auto backKey = [&]() {   // Android back button / gesture: pause in game, Esc in menus
             const Snapshot* cs = renderCurrent();
             int k = cs && cs->inGame ? 'P' : 27;
-            pushIn({0, k, k == 27 ? 27 : 0, true, 0, 0});
+            keySrc(SRC_SYSTEM, k, true, k == 27 ? 27 : 0);
             SDL_AddTimer(120, [](Uint32, void* p) -> Uint32 { SDL_Event e{}; e.type = SDL_USEREVENT; e.user.code = 0x4B; e.user.data1 = p; SDL_PushEvent(&e); return 0; }, (void*)(intptr_t)k);
         };
         // Input polling. Called at the start of every frame and also repeatedly (every ~1 ms) while the main
         // thread waits for the GPU / the refresh, so a key or button press reaches the logic thread almost
         // immediately instead of waiting for the next frame (up to one refresh, ~8 ms on average). An input that
         // arrives just before a tick boundary therefore no longer slips to the following tick.
+        // controller sticks (SDL): last position and the key each direction holds (L U R D)
+        int lsX = 0, lsY = 0, lsHeld[4] = {0, 0, 0, 0}, rsX = 0, rsY = 0, rsHeld[4] = {0, 0, 0, 0};
+        bool lsPlay = false;                     // mode the left stick's keys were chosen for
+        std::map<int, int> padBtnHeld;           // controller button -> key sent on press (released with it)
+        // left stick: WASD in gameplay (analog with joystick_acceleration), arrows in menus. Re-evaluated when the
+        // game switches between the two, not only when the stick moves (a held stick must not keep the other
+        // mode's keys).
+        auto updateLeftStick = [&](bool play) {
+            const int dead = 12000;
+            int want[4] = {0, 0, 0, 0};
+            lsPlay = play;
+            if (play && g_joyAccel) {
+                // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
+                float m = std::min(1.f, std::hypot((float)lsX, (float)lsY) / 32767.f);
+                if (m > 0.2f) {
+                    float ux = lsX / 32767.f / m, uy = lsY / 32767.f / m;
+                    want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                }
+                padMove = m > 0.2f ? m : -1.f;
+            } else {
+                want[0] = lsX < -dead; want[2] = lsX > dead; want[1] = lsY < -dead; want[3] = lsY > dead;
+                padMove = -1.f;
+            }
+            static const int kGame[4] = {'A', 'W', 'D', 'S'}, kMenu[4] = {37, 38, 39, 40};
+            for (int k = 0; k < 4; k++) {
+                int code = want[k] ? (play ? kGame[k] : kMenu[k]) : 0;
+                if (lsHeld[k] != code) { if (lsHeld[k]) keySrc(SRC_LSTICK, lsHeld[k], false); if (code) keySrc(SRC_LSTICK, code, true); lsHeld[k] = code; }
+            }
+        };
+        auto updateRightStick = [&]() {   // right stick: the shooting arrows
+            const int dead = 12000;
+            int want[4] = {rsX < -dead ? 37 : 0, rsY < -dead ? 38 : 0, rsX > dead ? 39 : 0, rsY > dead ? 40 : 0};
+            for (int k = 0; k < 4; k++) if (rsHeld[k] != want[k]) { if (rsHeld[k]) keySrc(SRC_RSTICK, rsHeld[k], false); if (want[k]) keySrc(SRC_RSTICK, want[k], true); rsHeld[k] = want[k]; }
+        };
+        onReleaseAll = [&]() {   // (the keys are already released: forget what the controller held)
+            for (int k = 0; k < 4; k++) lsHeld[k] = rsHeld[k] = 0;
+            padBtnHeld.clear(); padMove = -1.f;
+        };
         auto pollInput = [&]() {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 switch (e.type) {
                     case SDL_QUIT: running = false; break;
                     case SDL_WINDOWEVENT:
-                        if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) pushIn({2, 0, 0, false, 0, 0});   // avoid "stuck" keys
+                        if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) { touch.releaseAll(nowSec()); releaseAllKeys(); }   // avoid "stuck" keys
                         break;
                     case SDL_USEREVENT:
-                        if (e.user.code == 0x4B) { int k = (int)(intptr_t)e.user.data1; pushIn({0, k, 0, false, 0, 0}); }   // (back key release)
+                        if (e.user.code == 0x4B) { int k = (int)(intptr_t)e.user.data1; keySrc(SRC_SYSTEM, k, false); }   // (back key release)
                         break;
                     case SDL_APP_WILLENTERBACKGROUND: {   // Android: phone call, home button...: pause the run and freeze logic
                         const Snapshot* cs = renderCurrent();
                         if (cs && cs->gameplay) { pushIn({0, 'P', 0, true, 0, 0}); pushIn({0, 'P', 0, false, 0, 0}); }
-                        touch.releaseAll(nowSec()); pushIn({2, 0, 0, false, 0, 0});
+                        touch.releaseAll(nowSec()); releaseAllKeys();
                         int r = ++flushReq;   // the save is written by the logic thread (it owns the game state)
                         for (int i = 0; i < 50 && flushDone.load() != r; i++) SDL_Delay(5);
                         break;
@@ -1023,7 +1087,10 @@ int main(int argc, char** argv) {
                         if (down && e.key.keysym.sym == SDLK_F12) { static int sn = 0; char nm[64]; snprintf(nm, sizeof nm, "screenshot_%d.bmp", ++sn); renderScreenshot((pref + nm).c_str()); break; }
                         int c = sdlToFlash(e.key.keysym.sym);
                         if (e.key.repeat && !down) break;
-                        if (c) pushIn({0, c, asciiOf(e.key.keysym.sym, e.key.keysym.mod & KMOD_SHIFT), down, 0, 0});
+                        if (!c) break;
+                        int asc = asciiOf(e.key.keysym.sym, e.key.keysym.mod & KMOD_SHIFT);
+                        if (e.key.repeat) { if (keyMask[c] & (1u << SRC_KEYBOARD)) pushIn({0, c, asc, true, 0, 0}); }   // (auto-repeat: as before)
+                        else keySrc(SRC_KEYBOARD, c, down, asc);
                         break;
                     }
                     case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: {
@@ -1066,60 +1133,54 @@ int main(int argc, char** argv) {
                             {SDL_CONTROLLER_BUTTON_DPAD_UP, {'W', 38, 38}}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, {'S', 40, 40}},
                             {SDL_CONTROLLER_BUTTON_DPAD_LEFT, {'A', 37, 37}}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, {'D', 39, 39}},
                         };
-                        static std::map<int, int> held;   // button -> key sent
                         bool d = e.type == SDL_CONTROLLERBUTTONDOWN; int btn = e.cbutton.button;
                         auto it = kMap.find(btn); if (it == kMap.end()) break;
                         if (d) {
                             const Snapshot* cs = renderCurrent();
                             int code = cs && cs->gameplay ? it->second.game : cs && cs->inGame ? it->second.pause : it->second.menu;
-                            if (!code || held.count(btn)) break;
-                            held[btn] = code;
-                            if (padKeys[code] != true) { padKeys[code] = true; pushIn({0, code, (code == 32 || code == 13 || code == 27) ? code : 0, true, 0, 0}); }
+                            if (!code || padBtnHeld.count(btn)) break;
+                            padBtnHeld[btn] = code;
+                            keySrc(SRC_BUTTONS, code, true, (code == 32 || code == 13 || code == 27) ? code : 0);
                         } else {
-                            auto h = held.find(btn); if (h == held.end()) break;
-                            int code = h->second; held.erase(h);
-                            bool still = false; for (auto& o : held) still |= o.second == code;
-                            if (!still && padKeys[code]) { padKeys[code] = false; pushIn({0, code, 0, false, 0, 0}); }
+                            auto h = padBtnHeld.find(btn); if (h == padBtnHeld.end()) break;
+                            int code = h->second; padBtnHeld.erase(h);
+                            bool still = false; for (auto& o : padBtnHeld) still |= o.second == code;
+                            if (!still) keySrc(SRC_BUTTONS, code, false);
                         }
                         break;
                     }
                     case SDL_CONTROLLERAXISMOTION: {
-                        const int dead = 12000; int v = e.caxis.value;
-                        auto pk = [&](int code, bool d) { if (padKeys[code] != d) { padKeys[code] = d; pushIn({0, code, code == 32 ? 32 : 0, d, 0, 0}); } };
+                        int v = e.caxis.value;
                         const Snapshot* cs = renderCurrent(); bool play = cs && cs->gameplay;
-                        // left stick: WASD in gameplay, arrows in menus (the arrows/WASD of the other mode are released)
                         switch (e.caxis.axis) {
-                            case SDL_CONTROLLER_AXIS_LEFTX: case SDL_CONTROLLER_AXIS_LEFTY: {
-                                static int lx = 0, ly = 0, held[4] = {0, 0, 0, 0};   // stick position; key held per direction (L U R D)
-                                (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ? lx : ly) = v;
-                                int want[4] = {0, 0, 0, 0};
-                                if (play && g_joyAccel) {
-                                    // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
-                                    float m = std::min(1.f, std::hypot((float)lx, (float)ly) / 32767.f);
-                                    if (m > 0.2f) {
-                                        float ux = lx / 32767.f / m, uy = ly / 32767.f / m;
-                                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
-                                    }
-                                    padMove = m > 0.2f ? m : -1.f;
-                                } else {
-                                    want[0] = lx < -dead; want[2] = lx > dead; want[1] = ly < -dead; want[3] = ly > dead;
-                                    padMove = -1.f;
-                                }
-                                static const int kGame[4] = {'A', 'W', 'D', 'S'}, kMenu[4] = {37, 38, 39, 40};
-                                for (int k = 0; k < 4; k++) {
-                                    int code = want[k] ? (play ? kGame[k] : kMenu[k]) : 0;
-                                    if (held[k] != code) { if (held[k]) pk(held[k], false); if (code) pk(code, true); held[k] = code; }
-                                }
-                                break;
-                            }
-                            case SDL_CONTROLLER_AXIS_RIGHTX: pk(37, v < -dead); pk(39, v > dead); break;
-                            case SDL_CONTROLLER_AXIS_RIGHTY: pk(38, v < -dead); pk(40, v > dead); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: pk('E', play && v > 8000); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: pk(32, play && v > 8000); break;
+                            case SDL_CONTROLLER_AXIS_LEFTX: lsX = v; updateLeftStick(play); break;
+                            case SDL_CONTROLLER_AXIS_LEFTY: lsY = v; updateLeftStick(play); break;
+                            case SDL_CONTROLLER_AXIS_RIGHTX: rsX = v; updateRightStick(); break;
+                            case SDL_CONTROLLER_AXIS_RIGHTY: rsY = v; updateRightStick(); break;
+                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: keySrc(SRC_TRIGGERS, 'E', play && v > 8000); break;
+                            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: keySrc(SRC_TRIGGERS, 32, play && v > 8000, 32); break;
                         }
                         break;
                     }
                     default: break;
+                }
+            }
+            {   // the game switched between playing and a menu (boss "VS" screen, pause, death...): sticks and D-pad
+                // directions being held now mean the other mode's keys (WASD <-> arrows)
+                const Snapshot* cs = renderCurrent(); bool play = cs && cs->gameplay;
+                if (play != lsPlay) updateLeftStick(play);
+                static const std::map<int, std::array<int, 3>> kDir = {
+                    {SDL_CONTROLLER_BUTTON_DPAD_UP, {'W', 38, 38}}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, {'S', 40, 40}},
+                    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, {'A', 37, 37}}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, {'D', 39, 39}}};
+                int mode = play ? 0 : cs && cs->inGame ? 1 : 2;
+                for (auto& h : padBtnHeld) {
+                    auto it = kDir.find(h.first); if (it == kDir.end()) continue;
+                    int code = it->second[mode];
+                    if (code == h.second) continue;
+                    int old = h.second; h.second = code;
+                    bool still = false; for (auto& o : padBtnHeld) still |= o.second == old;
+                    if (!still) keySrc(SRC_BUTTONS, old, false);
+                    keySrc(SRC_BUTTONS, code, true);
                 }
             }
 #ifdef __SWITCH__
@@ -1151,6 +1212,13 @@ int main(int argc, char** argv) {
                     SDL_Event e{}; e.type = j.op == "down" ? SDL_FINGERDOWN : j.op == "move" ? SDL_FINGERMOTION : SDL_FINGERUP;
                     e.tfinger.fingerId = j.id; e.tfinger.x = (float)j.x; e.tfinger.y = (float)j.y; SDL_PushEvent(&e);
                 } else if (j.op == "back") { SDL_Event e{}; e.type = SDL_KEYDOWN; e.key.keysym.sym = SDLK_AC_BACK; SDL_PushEvent(&e); }
+                else if (j.op == "axis" || j.op == "button") {   // controller: "axis <SDL axis> <value>", "button <SDL button> <0|1>"
+                    std::istringstream as(j.arg); int a = 0, v = 0; as >> a >> v;
+                    SDL_Event e{};
+                    if (j.op == "axis") { e.type = SDL_CONTROLLERAXISMOTION; e.caxis.axis = (Uint8)a; e.caxis.value = (Sint16)v; }
+                    else { e.type = v ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP; e.cbutton.button = (Uint8)a; }
+                    SDL_PushEvent(&e);
+                }
                 else if (j.op == "shot") injectShot = j.arg;
                 else if (j.op == "eval") { std::lock_guard<std::mutex> lk(inMu); evalQ.push_back(j.arg); }
                 else if (j.op == "quit") running = false;

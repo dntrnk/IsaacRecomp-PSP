@@ -268,10 +268,12 @@ static DisplayObject* createForChar(uint16_t id) {
 static void buttonSetState(ButtonObj* b, int state);
 
 void applyPlace(DisplayObject* d, const PlaceCmd& pc) {
-    if (!d->scriptXform) {
-        if (pc.hasMatrix) d->setMatrix(pc.m);
-        if (pc.hasCx) d->cx = pc.cx;
-    }
+    // Flash Player keeps applying the timeline's matrix to an object whose color was set through
+    // Transform.colorTransform (only its color stops following the timeline): the game recolors the HUD hearts
+    // every tick and then switches -LIFE- to its 24/48-heart layout with gotoAndStop, which must move/shrink them.
+    // (Ruffle locks the whole PlaceObject here; the original game shows the hearts re-laid out.)
+    if (!d->scriptXform && pc.hasMatrix) d->setMatrix(pc.m);
+    if (!d->scriptXform && !d->scriptColor && pc.hasCx) d->cx = pc.cx;
     if (pc.hasRatio) d->ratio = pc.ratio;
     if (pc.hasFilters) d->filters = pc.filters;
     if (pc.hasBlend) d->blend = pc.blend;

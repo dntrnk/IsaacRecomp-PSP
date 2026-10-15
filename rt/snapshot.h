@@ -76,6 +76,7 @@ struct Snapshot {
     // displacement relative to the previous tick (to detect jumps)
     std::vector<uint64_t> uidTable; uint32_t uidMask = 0;
     std::vector<float> jump;
+    std::vector<uint8_t> fresh;   // node did not exist in the tick before (renderer)
     bool indexed = false;
     int findUid(uint32_t uid) const {
         if (uidTable.empty()) return -1;

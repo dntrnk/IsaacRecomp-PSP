@@ -568,7 +568,7 @@ static bool g_recStencil = false, g_recScissor = false;   // recorded state (not
 static SnapPtr g_prevSnap, g_curSnap;
 bool g_retireSnapshots = false;
 static std::mutex g_retireMu; static std::vector<SnapPtr> g_retired;
-struct NodeInterp { int32_t prev = -1; bool snap = true; };
+struct NodeInterp { int32_t prev = -1; bool snap = true, jumped = false; };
 static std::vector<NodeInterp> g_interp;
 static std::vector<double> g_wscale;
 
@@ -601,6 +601,7 @@ static void computeInterp() {
     size_t n = cur.nodes.size();
     g_interp.assign(n, NodeInterp());
     cur.jump.assign(n, 0.f);
+    cur.fresh.assign(n, 1);
     if (!g_prevSnap) return;
     Snapshot& prev = *g_prevSnap;
     g_wscale.resize(n);   // world scale of each node (at the current tick)
@@ -610,9 +611,14 @@ static void computeInterp() {
         g_wscale[i] = ps * maxScale(c.m);
         int pi = prev.findUid(c.uid);
         if (pi < 0) continue;
+        cur.fresh[i] = 0;
         const SnapNode& p = prev.nodes[pi];
         NodeInterp& ni = g_interp[i];
         ni.prev = pi;
+        // the parent teleported: show the whole subtree as it is now. (A new tear is created at (0,0) after the
+        // tick's movement code ran; the next tick moves it to Isaac's head and raises its graphic to the tear's
+        // height. Interpolating that child alone made the tear appear low and rise.)
+        if (c.parent >= 0 && g_interp[c.parent].jumped) { ni.jumped = true; continue; }
         bool snap = p.kind != c.kind || p.objKind != c.objKind || p.def != c.def || p.visible != c.visible || p.bmUid != c.bmUid;
         if (!snap && p.m.a == c.m.a && p.m.b == c.m.b && p.m.c == c.m.c && p.m.d == c.m.d && p.m.tx == c.m.tx && p.m.ty == c.m.ty) {
             ni.snap = false; continue;   // (most common case: it hasn't moved)
@@ -625,7 +631,11 @@ static void computeInterp() {
         // jumps: more than 250 stage px and much more than the previous tick's displacement
         double jump = std::hypot(c.m.tx - p.m.tx, c.m.ty - p.m.ty) * ps;
         double last = (size_t)pi < prev.jump.size() ? prev.jump[pi] : 0;
-        if (jump > 250 && jump > 2.5 * last + 40) snap = true;
+        if (jump > 250 && jump > 2.5 * last + 40) { snap = true; ni.jumped = true; }
+        // created during the last tick at the default (0,0) and only positioned now (attachMovie, then placed by
+        // the next tick's code): it never was at (0,0) on screen in a meaningful way, so don't slide from there
+        bool wasFresh = (size_t)pi < prev.fresh.size() && prev.fresh[pi];
+        if (wasFresh && p.m.tx == 0 && p.m.ty == 0 && (c.m.tx != 0 || c.m.ty != 0)) { snap = true; ni.jumped = true; }
         if (!snap) cur.jump[i] = (float)jump;
         ni.snap = snap;
     }
