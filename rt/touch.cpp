@@ -6,6 +6,8 @@
 namespace fl {
 
 static const double kMinHold = 0.09;
+static bool g_swap = false; static double g_sizeK = 0.12;
+void TouchControls::setLayout(bool swapSides, int size) { g_swap = swapSides; g_sizeK = size <= 0 ? 0.09 : size >= 2 ? 0.15 : 0.12; }
 static const double kDead = 0.18;      // dead zone (fraction of the radius)   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
 
 bool TouchControls::toStage(const TouchCtx& c, double px, double py, double& sx, double& sy) {
@@ -74,11 +76,11 @@ void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, do
             for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[best]; h.since = now; h.up = false; press(h.code, true); return; }
             return;
         }
-        int which = px < c.winW * 0.5 ? 0 : 1;
+        int which = (px < c.winW * 0.5) != g_swap ? 0 : 1;   // 0 = movement stick
         Stick& s = st_[which];
         if (s.id != -1) return;   // that side already has a finger
         s.id = id; s.cx = s.kx = px; s.cy = s.ky = py;
-        s.r = std::max(48.0, std::min(260.0, std::min(c.winW, c.winH) * 0.12));   // (size of the first Android build)
+        s.r = std::max(40.0, std::min(330.0, std::min(c.winW, c.winH) * g_sizeK));   // (normal = the first Android build's size)
         steer(s, which, px, py);
         return;
     }

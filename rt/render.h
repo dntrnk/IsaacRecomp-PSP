@@ -47,6 +47,7 @@ void renderHint(const std::string& text);   // small text in the bottom-right co
 struct TouchStick { bool active = false; double cx = 0, cy = 0, r = 0, kx = 0, ky = 0; };
 void renderTouchSticks(const TouchStick* sticks, int n);
 void renderPauseButton(double x0, double y0, double x1, double y1);   // window pixels
+void renderFocusRect(double x0, double y0, double x1, double y1, double t);   // controller focus in menus (window pixels)
 // game selection screen when several are available (rects: area of each option, for mouse and touch)
 void renderChooser(int winW, int winH, const std::string& title, const std::vector<std::string>& items, int sel,
                    const std::string& hint, std::vector<std::array<int, 4>>* rects);

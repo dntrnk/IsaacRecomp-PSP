@@ -297,3 +297,37 @@
 - Touch HUD targets: on a wide phone the bomb row is ~2 mm tall and a tap just above/below it spawned the movement
   stick. Targets are now tested in window pixels, grown to at least 13% of the screen height around their center,
   nearest center wins.
+
+## v1.3 features: controller menus, rebinding, save converter
+- Controller navigation (`rt/menuui.cpp`, logic thread). The game's menus are SWF buttons for the mouse. In menus /
+  the pause screen the main thread turns D-pad / left stick / A / B into InputEv type 5 (`NAV_*`, auto-repeat 0.38 s
+  then 0.11 s); `padNavEvent` keeps a focused button among the visible, enabled, on-stage ones of the topmost
+  `_root` child that has any (options sheet over the main menu, ...), moves it to the nearest button in the pressed
+  direction (distance along + 2.2 x sideways), hovers it with a mouse move (the game's own rollover art) and clicks it
+  with a synthetic mouse down/up at a point inside its hit shape. B: `_root.paus` on frame 2 (the pause screen) ->
+  P (resume), else Escape (the game's Back buttons have `keyPress "<Escape>"`). Screens without buttons get arrow /
+  Space / Escape pulses (3 ticks). The snapshot carries the focus rect; `renderFocusRect` draws it (dark red, paper
+  halo, pulsing). Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
+  game switches between gameplay and a menu (re-evaluated every frame). Headless: `ISAAC_MENUUI=1` + `eval nav N`.
+- "REBIND CONTROLS" entry: `_root.paus` (pauss in menus, hud.paus in a run) frame 8 is "Control options" in the
+  three games (same layout); a synthesized text field is placed in it at script depth (local 64,186), removed on
+  other frames. Click/tap (`menuMouse`) or controller confirm -> `g_rebindRequests` -> snapshot -> main thread opens
+  the screen.
+- Synthesized characters: `rectShape` / `textField` build ShapeDef / EditTextDef at run time (ids from 0xfffe down,
+  cached by parameters) and `instantiate` them, so the rebinding screen is a normal part of the display list,
+  drawn in the game's HUD font (Upheaval, found by name) and scaled with `_root`. `g_synthCharBase` keeps them out of
+  the learned preload lists.
+- Rebinding screen: state on the main thread (`RebindScreen`, `rt/controls.cpp`), which publishes a `UiModel`; the
+  logic thread rebuilds `_root.__controls` when its version changes and returns the row rects (stage) for taps.
+  While it is open no input reaches the game. Capture takes the next key / controller button (triggers = 100/101);
+  assigning an input already used by another action swaps them. Closing saves isaac.ini.
+- Bindings: actions -> keys (SDL keycodes) / controller inputs (SDL GameController numbering everywhere; Switch
+  buttons mapped by position). A device that was never customized keeps the original behaviour exactly; once
+  customized, its inputs are translated in gameplay (and Pause in the pause screen) to the key the game reads for that
+  action given `so.data.frog` / `so.data.left` (`gameCode`), and original action keys that are no longer bound do
+  nothing in gameplay. Controller: `controller_move_stick` swaps stick roles. Touch: side and joystick size.
+- Save converter (`tools/save_converter.html`, shipped in the packages as `save_converter.html`): ISAACSO1 <-> Flash
+  LSO (AMF0). Keeps every field both ways except the Flash-only `wind`/`res` (not written to IsaacRecomp); writes
+  `cocks = true` to Flash saves (otherwise the Flash game restores stats from its serial.txt backup); empty cols/boss
+  slots become 0 in Flash and undefined in IsaacRecomp, like each game writes them. Tested both ways and round trips
+  on saves of the three versions.

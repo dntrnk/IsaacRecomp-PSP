@@ -8,6 +8,8 @@
 #endif
 #include "snapshot.h"
 #include "touch.h"
+#include "controls.h"
+#include "menuui.h"
 #ifdef __ANDROID__
 #include <jni.h>
 #include <sys/stat.h>
@@ -467,6 +469,15 @@ int main(int argc, char** argv) {
     std::string pref; { char* p = SDL_GetPrefPath("IsaacRecomp", "WrathOfTheLamb"); if (p) { pref = p; SDL_free(p); } else pref = base; }
 #endif
     loadConfig(base + "isaac.ini", cfg);
+    {   // control bindings (rebinding screen: Options > Controls > Rebind controls)
+        std::map<std::string, std::string> kv; std::ifstream f(base + "isaac.ini"); std::string line;
+        while (std::getline(f, line)) {
+            std::string t = trim(line); if (t.empty() || t[0] == ';' || t[0] == '#') continue;
+            size_t eq = t.find('='); if (eq != std::string::npos) kv[trim(t.substr(0, eq))] = trim(t.substr(eq + 1));
+        }
+        bindingsLoad([&](const std::string& k) { auto it = kv.find(k); return it == kv.end() ? std::string() : it->second; });
+        TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize);
+    }
     std::string forcedGame;   // --game og|wotl|eternal (testing, and restart after "Delete save")
     bool headless = false, norender = false, stats = false, perfStart = false; int maxFrames = -1; uint32_t monkeySeed = 0; std::string wavPath; std::vector<ScriptCmd> script; std::string shotPrefix;
     for (int i = 1; i < argc; i++) {
@@ -732,7 +743,10 @@ int main(int argc, char** argv) {
             Uint64 lt0 = SDL_GetPerformanceCounter(); size_t heap0 = gcCount();
             static int sampleTick = getenv("ISAAC_SAMPLE_TICK") ? atoi(getenv("ISAAC_SAMPLE_TICK")) : -1;
             if ((int)g_player.tick == sampleTick) profSampleStart();
-            runFrame(); runIntervals(); recompPatchesTick(); gcCollect();
+            runFrame(); runIntervals(); recompPatchesTick();
+            static const bool menuUi = getenv("ISAAC_MENUUI") != nullptr;   // (testing the controller menus / rebinding screen)
+            if (menuUi) { bool ig = false, gp = recompInGameplay(&ig); menuUiTick(gp, ig); }
+            gcCollect();
             if ((int)g_player.tick == sampleTick + 1) profSampleStop();
             double lms = (SDL_GetPerformanceCounter() - lt0) * 1000.0 / freq;
             if (stats) {
@@ -786,7 +800,7 @@ int main(int argc, char** argv) {
         bool inputBlocked = false;
         double blockedTouchAt = -1;   // last input attempt while preloading (shows the progress for a few seconds)
         auto pushIn = [&](InputEv ev) {
-            if (inputBlocked && (ev.type == 0 || ev.type == 1 || ev.type == 4)) { if (ev.type != 1 || ev.code == 1) blockedTouchAt = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency(); return; }
+            if (inputBlocked && (ev.type == 0 || ev.type == 1 || ev.type == 4 || ev.type == 5)) { if (ev.type != 1 || ev.code == 1) blockedTouchAt = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency(); return; }
             std::lock_guard<std::mutex> lk(inMu); inQ.push_back(ev);
         };
         // Every input source (keyboard, touch, controller buttons, each stick, triggers, Switch pad...) presses game keys
@@ -794,7 +808,7 @@ int main(int argc, char** argv) {
         // pressed) a key another one still holds. (Before, a controller's left stick crossing into a menu - the boss
         // "VS" screen - turned its WASD into arrows and kept an arrow pressed after the fight started: Isaac
         // kept shooting by himself.)
-        enum { SRC_KEYBOARD, SRC_TOUCH, SRC_BUTTONS, SRC_LSTICK, SRC_RSTICK, SRC_TRIGGERS, SRC_SWITCHPAD, SRC_SYSTEM };
+        enum { SRC_KEYBOARD, SRC_TOUCH, SRC_BUTTONS, SRC_LSTICK, SRC_RSTICK, SRC_TRIGGERS, SRC_SWITCHPAD, SRC_SYSTEM, SRC_TRIGGER_R };
         uint16_t keyMask[256] = {};
         auto keySrc = [&](int src, int code, bool down, int ascii = 0) {
             if (code <= 0 || code >= 256) return;
@@ -807,6 +821,32 @@ int main(int argc, char** argv) {
             memset(keyMask, 0, sizeof keyMask);
             if (onReleaseAll) onReleaseAll();
             pushIn({2, 0, 0, false, 0, 0});
+        };
+        // ---- controller in menus (an outline on the selected option, see menuui.cpp) and the rebinding screen
+        RebindScreen wiz;
+        int lastDevice = kIsAndroid ? DEV_TOUCH : kIsSwitch ? DEV_PAD : DEV_KEYBOARD;   // what the player used last
+        bool sawKeyboard = false;
+        bool navActive = false;                  // the logic thread is showing the outline
+        int dpadDir = -1, stickNavDir = -1, lastNavDir = -1; double navNext = 0;   // held direction (auto-repeat)
+        auto navSink = [&](int code) {
+            if (wiz.isOpen()) { wiz.nav(code); return; }
+            pushIn({5, code, 0, false, 0, 0}); navActive = true;
+        };
+        auto navOff = [&]() { if (navActive) { pushIn({5, NAV_OFF, 0, false, 0, 0}); navActive = false; } };
+        struct Ctx { bool play, inGame, frog, lefty; };
+        auto ctxNow = [&]() { const Snapshot* cs = renderCurrent(); return Ctx{cs && cs->gameplay, cs && cs->inGame, cs && cs->frog, cs && cs->lefty}; };
+        // gameplay: the key a controller input sends (the original mapping unless the controller was rebound)
+        auto padGameCode = [&](int input, int original) {
+            if (!g_bind.padCustom) return original;
+            int a = padActionOf(input); if (a < 0) return 0;
+            Ctx c = ctxNow(); return gameCode(a, c.frog, c.lefty);
+        };
+        // movement / shooting direction (L U R D) -> key
+        auto dirCode = [&](bool shoot, int k) {
+            static const int wasd[4] = {'A', 'W', 'D', 'S'}, arrows[4] = {37, 38, 39, 40};
+            static const int act[4] = {A_MOVE_LEFT, A_MOVE_UP, A_MOVE_RIGHT, A_MOVE_DOWN};
+            if (!g_bind.padCustom) return shoot ? arrows[k] : wasd[k];
+            Ctx c = ctxNow(); return gameCode(act[k] + (shoot ? A_SHOOT_UP - A_MOVE_UP : 0), c.frog, c.lefty);
         };
         std::string iniPath = base + "isaac.ini";
         auto setFullscreen = [&](bool full) {
@@ -843,7 +883,8 @@ int main(int argc, char** argv) {
                 for (auto& ev : evs) {
                     if (inputLog) logf("[input] tick %u type %d code %d down %d at %.0f,%.0f\n", g_player.tick, ev.type, ev.code, ev.down, ev.x, ev.y);
                     if (ev.type == 0) keyEvent(ev.code, ev.ascii, ev.down);
-                    else if (ev.type == 1) mouseEvent(ev.x, ev.y, ev.code);
+                    else if (ev.type == 1) { menuMouse(ev.x, ev.y, ev.code); mouseEvent(ev.x, ev.y, ev.code); }
+                    else if (ev.type == 5) padNavEvent(ev.code);   // controller in menus (menuui.cpp)
                     else if (ev.type == 3) recompFullscreenChanged(ev.down);
                     else if (ev.type == 4) {
                         // a tap in a menu already went through as a mouse click; if there is nothing clickable on screen
@@ -858,8 +899,11 @@ int main(int argc, char** argv) {
                 g_player.timeMs = n * dt * 1000.0;
                 renderFreeRetired();   // (snapshots the renderer is done with: freed here, not on the render thread)
                 double t0 = nowSec();
-                runFrame(); runIntervals(); recompPatchesTick(); gcCollect((nowSec() - t0) * 1000.0);
+                runFrame(); runIntervals(); recompPatchesTick();
+                { bool ig = false, gp = recompInGameplay(&ig); menuUiTick(gp, ig); }
+                gcCollect((nowSec() - t0) * 1000.0);
                 SnapPtr snap = buildSnapshot();
+                menuUiFill(*snap);
                 snap->time = target; snap->logicMs = (nowSec() - t0) * 1000.0;
                 snap->entities = entityCount(); snap->mouseHidden = g_mouseHidden; snap->gameplay = recompInGameplay(&snap->inGame);
                 if (touchUI) snap->touchMask = recompTouchTargets(snap->touchRects);
@@ -886,36 +930,78 @@ int main(int argc, char** argv) {
         PadState pad; padInitializeDefault(&pad);
         int padHeld[sizeof(kPadMap) / sizeof(kPadMap[0])] = {0};   // key sent on press (to release the same one)
         std::map<int, int> keyRefs;                                  // several inputs can press the same key
+        // Joy-Con / Pro Controller buttons -> controller input ids of controls.h (by position, like SDL's: Nintendo
+        // B is the bottom face button, A the right one...)
+        auto swInput = [](u64 btn) -> int {
+            switch (btn) {
+                case HidNpadButton_B: return SDL_CONTROLLER_BUTTON_A; case HidNpadButton_A: return SDL_CONTROLLER_BUTTON_B;
+                case HidNpadButton_Y: return SDL_CONTROLLER_BUTTON_X; case HidNpadButton_X: return SDL_CONTROLLER_BUTTON_Y;
+                case HidNpadButton_L: return SDL_CONTROLLER_BUTTON_LEFTSHOULDER; case HidNpadButton_R: return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+                case HidNpadButton_ZL: return PAD_LT; case HidNpadButton_ZR: return PAD_RT;
+                case HidNpadButton_Plus: return SDL_CONTROLLER_BUTTON_START; case HidNpadButton_Minus: return SDL_CONTROLLER_BUTTON_BACK;
+                case HidNpadButton_StickL: return SDL_CONTROLLER_BUTTON_LEFTSTICK; case HidNpadButton_StickR: return SDL_CONTROLLER_BUTTON_RIGHTSTICK;
+                case HidNpadButton_Up: return SDL_CONTROLLER_BUTTON_DPAD_UP; case HidNpadButton_Down: return SDL_CONTROLLER_BUTTON_DPAD_DOWN;
+                case HidNpadButton_Left: return SDL_CONTROLLER_BUTTON_DPAD_LEFT; case HidNpadButton_Right: return SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+            }
+            return -1;
+        };
         auto padPoll = [&]() {
             padUpdate(&pad);
-            u64 b = padGetButtons(&pad);
+            u64 b = padGetButtons(&pad), bDown = padGetButtonsDown(&pad);
             // L3 + R3 (click both sticks): performance diagnostics, like F3 on PC
             const u64 both = HidNpadButton_StickL | HidNpadButton_StickR;
-            if ((padGetButtonsDown(&pad) & both) && (b & both) == both) {
+            if ((bDown & both) && (b & both) == both) {
                 perfOn = !perfOn; perfLines.clear(); pw = PerfWin(); pwStart = nowSec();
                 if (perfOn) perfLog("--- diagnostics enabled (L3+R3) ---\n");
             }
+            if (bDown) lastDevice = DEV_PAD;
             const Snapshot* cs = renderCurrent();
-            bool inGame = cs && cs->inGame, play = cs && cs->gameplay;
-            // ZR held for 5 s in gameplay: restart (the game restarts when R is held for 1 s)
+            bool inGame = cs && cs->inGame, play = cs && cs->gameplay && !wiz.isOpen();
+            const size_t N = sizeof(kPadMap) / sizeof(kPadMap[0]);
+            auto release = [&](size_t i) { if (!padHeld[i]) return; int k = padHeld[i]; padHeld[i] = 0; if (--keyRefs[k] == 0) keySrc(SRC_SWITCHPAD, k, false); };
+            const u64 stickLDirs = HidNpadButton_StickLLeft | HidNpadButton_StickLRight | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
+            const u64 stickRDirs = HidNpadButton_StickRLeft | HidNpadButton_StickRRight | HidNpadButton_StickRUp | HidNpadButton_StickRDown;
+            const u64 dpadAll = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right;
+            // menus / rebinding screen: D-pad and left stick move the outline, A confirms, B goes back
+            if (!play) {
+                int dir = -1;
+                if (b & (HidNpadButton_Up | HidNpadButton_StickLUp)) dir = NAV_UP;
+                else if (b & (HidNpadButton_Down | HidNpadButton_StickLDown)) dir = NAV_DOWN;
+                else if (b & (HidNpadButton_Left | HidNpadButton_StickLLeft)) dir = NAV_LEFT;
+                else if (b & (HidNpadButton_Right | HidNpadButton_StickLRight)) dir = NAV_RIGHT;
+                dpadDir = dir;
+                if (wiz.isOpen()) {
+                    for (size_t i = 0; i < N; i++) release(i);
+                    if (wiz.capturing()) {
+                        for (u64 bit = 1; bit; bit <<= 1) if ((bDown & bit) && !(bit & (stickLDirs | stickRDirs))) { int in = swInput(bit); if (in >= 0) { if (!wiz.capturePad(in) && bit == HidNpadButton_B) wiz.nav(NAV_BACK); break; } }
+                    } else {
+                        if (bDown & (HidNpadButton_A | HidNpadButton_Plus)) wiz.nav(NAV_CONFIRM);
+                        else if (bDown & (HidNpadButton_B | HidNpadButton_Minus)) wiz.nav(NAV_BACK);
+                    }
+                    return;
+                }
+                if (bDown & HidNpadButton_A) navSink(NAV_CONFIRM);
+                else if (bDown & HidNpadButton_B) navSink(NAV_BACK);
+            }
+            // ZR held for 5 s in gameplay: restart (the game restarts when R is held for 1 s), unless ZR was rebound
             {
                 static double zrSince = -1, rUntil = -1;
                 double now = nowSec();
-                bool zr = (b & HidNpadButton_ZR) && play;
+                bool zr = (b & HidNpadButton_ZR) && play && (!g_bind.padCustom || padActionOf(PAD_RT) < 0);
                 if (!zr) zrSince = -1; else if (zrSince < 0) zrSince = now;
                 if (zr && zrSince > 0 && now - zrSince >= 5.0 && rUntil < 0) { rUntil = now + 1.4; keySrc(SRC_SYSTEM, 82, true); zrSince = 1e18; }
                 if (rUntil > 0 && now >= rUntil) { keySrc(SRC_SYSTEM, 82, false); rUntil = -1; }
-                if (!zr && zrSince < 0 && rUntil < 0) {}
             }
-            // analog movement (joystick_acceleration): in gameplay the left stick is read as a vector (round dead zone,
-            // 8 directions) instead of libnx's digital stick "buttons", and its distance sets the speed
+            // analog movement (joystick_acceleration): in gameplay the movement stick is read as a vector (round dead
+            // zone, 8 directions) instead of libnx's digital stick "buttons", and its distance sets the speed
+            const int moveStick = g_bind.padCustom ? g_bind.padMoveStick : 0;
             const bool analog = play && g_joyAccel;
             {
                 static int held4[4] = {0, 0, 0, 0};
                 int want[4] = {0, 0, 0, 0};
                 padMove = -1.f;
                 if (analog) {
-                    HidAnalogStickState st = padGetStickPos(&pad, 0);
+                    HidAnalogStickState st = padGetStickPos(&pad, moveStick);
                     float m = std::min(1.f, std::hypot((float)st.x, (float)st.y) / 32767.f);
                     if (m > 0.2f) {
                         float ux = st.x / 32767.f / m, uy = -st.y / 32767.f / m;   // (libnx: y up)
@@ -923,34 +1009,47 @@ int main(int argc, char** argv) {
                         padMove = m;
                     }
                 }
-                static const int kGame[4] = {'A', 'W', 'D', 'S'};
                 for (int k = 0; k < 4; k++) {
-                    int code = want[k] ? kGame[k] : 0;
+                    int code = want[k] ? dirCode(false, k) : 0;
                     if (held4[k] == code) continue;
                     if (held4[k] && --keyRefs[held4[k]] == 0) keySrc(SRC_SWITCHPAD, held4[k], false);
                     if (code && keyRefs[code]++ == 0) keySrc(SRC_SWITCHPAD, code, true);
                     held4[k] = code;
                 }
             }
-            for (size_t i = 0; i < sizeof(kPadMap) / sizeof(kPadMap[0]); i++) {
-                const u64 stickL = HidNpadButton_StickLLeft | HidNpadButton_StickLRight | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
-                bool down = (b & kPadMap[i].btn) != 0 && !(analog && (kPadMap[i].btn & stickL));
-                if (down && padHeld[i] && (kPadMap[i].game == 'A' || kPadMap[i].game == 'D' || kPadMap[i].game == 'W' || kPadMap[i].game == 'S')) {
-                    // a direction held while the game switches between playing and a menu: its key follows the mode
-                    int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
-                    if (k && k != padHeld[i]) {
-                        if (--keyRefs[padHeld[i]] == 0) keySrc(SRC_SWITCHPAD, padHeld[i], false);
-                        padHeld[i] = k;
-                        if (keyRefs[k]++ == 0) keySrc(SRC_SWITCHPAD, k, true);
-                    }
-                } else if (down && !padHeld[i]) {
-                    int k = play ? kPadMap[i].game : inGame ? kPadMap[i].pause : kPadMap[i].menu;
-                    if (!k) continue;
+            const u64 analogDirs = analog ? (moveStick ? stickRDirs : stickLDirs) : 0;
+            auto stickDir = [](u64 btn) {   // L U R D index of a stick direction "button"
+                if (btn & (HidNpadButton_StickLLeft | HidNpadButton_StickRLeft)) return 0;
+                if (btn & (HidNpadButton_StickLUp | HidNpadButton_StickRUp)) return 1;
+                if (btn & (HidNpadButton_StickLRight | HidNpadButton_StickRRight)) return 2;
+                return 3;
+            };
+            auto codeFor = [&](size_t i) -> int {   // the key this button sends in the current context
+                u64 btn = kPadMap[i].btn;
+                if (!play) {
+                    if (btn & (dpadAll | stickLDirs | HidNpadButton_A | HidNpadButton_B)) return 0;   // (the outline)
+                    if (inGame && g_bind.padCustom && padActionOf(swInput(btn)) == A_PAUSE) return 'P';
+                    return inGame ? kPadMap[i].pause : kPadMap[i].menu;
+                }
+                if (!g_bind.padCustom) return kPadMap[i].game;
+                if (btn & (stickLDirs | stickRDirs)) {
+                    bool isMoveStick = ((btn & stickLDirs) != 0) == (moveStick == 0);
+                    return dirCode(!isMoveStick, stickDir(btn));
+                }
+                return padGameCode(swInput(btn), kPadMap[i].game);
+            };
+            for (size_t i = 0; i < N; i++) {
+                bool down = (b & kPadMap[i].btn) != 0 && !(kPadMap[i].btn & analogDirs);
+                int k = down ? codeFor(i) : 0;
+                if (padHeld[i] && padHeld[i] != k) {
+                    // released, or held while the game switched between playing and a menu: directions follow the
+                    // mode (other buttons keep the key they pressed until released)
+                    bool dirBtn = (kPadMap[i].btn & (dpadAll | stickLDirs | stickRDirs)) != 0;
+                    if (!down || dirBtn || !k) release(i); else continue;
+                }
+                if (k && !padHeld[i]) {
                     padHeld[i] = k;
                     if (keyRefs[k]++ == 0) keySrc(SRC_SWITCHPAD, k, true, (k == 32 || k == 13 || k == 27) ? k : 0);
-                } else if (!down && padHeld[i]) {
-                    int k = padHeld[i]; padHeld[i] = 0;
-                    if (--keyRefs[k] == 0) keySrc(SRC_SWITCHPAD, k, false);
                 }
             }
         };
@@ -1005,42 +1104,65 @@ int main(int argc, char** argv) {
         // immediately instead of waiting for the next frame (up to one refresh, ~8 ms on average). An input that
         // arrives just before a tick boundary therefore no longer slips to the following tick.
         // controller sticks (SDL): last position and the key each direction holds (L U R D)
-        int lsX = 0, lsY = 0, lsHeld[4] = {0, 0, 0, 0}, rsX = 0, rsY = 0, rsHeld[4] = {0, 0, 0, 0};
-        bool lsPlay = false;                     // mode the left stick's keys were chosen for
+        int lsX = 0, lsY = 0, rsX = 0, rsY = 0, mvHeld[4] = {0, 0, 0, 0}, shHeld[4] = {0, 0, 0, 0};
+        bool lsPlay = false;                     // mode the sticks' keys were chosen for
         std::map<int, int> padBtnHeld;           // controller button -> key sent on press (released with it)
-        // left stick: WASD in gameplay (analog with joystick_acceleration), arrows in menus. Re-evaluated when the
-        // game switches between the two, not only when the stick moves (a held stick must not keep the other
-        // mode's keys).
-        auto updateLeftStick = [&](bool play) {
+        bool navDpad[4] = {false, false, false, false};   // D-pad held in a menu (U D L R)
+        int trigSent[2] = {0, 0}; bool trigOn[2] = {false, false};
+        std::map<int, int> kbSent;               // keyboard scancode -> key sent on press
+        int lastRebindReq = 0;
+        // In gameplay the movement stick moves (WASD, analog with joystick_acceleration) and the other one shoots
+        // (arrows); in menus the left stick drives the outline. Re-evaluated when the game switches between the two,
+        // not only when a stick moves (a held stick must not keep the other mode's keys).
+        auto updateSticks = [&](bool play) {
             const int dead = 12000;
-            int want[4] = {0, 0, 0, 0};
-            lsPlay = play;
-            if (play && g_joyAccel) {
-                // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
-                float m = std::min(1.f, std::hypot((float)lsX, (float)lsY) / 32767.f);
-                if (m > 0.2f) {
-                    float ux = lsX / 32767.f / m, uy = lsY / 32767.f / m;
-                    want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
-                }
-                padMove = m > 0.2f ? m : -1.f;
-            } else {
-                want[0] = lsX < -dead; want[2] = lsX > dead; want[1] = lsY < -dead; want[3] = lsY > dead;
-                padMove = -1.f;
+            bool swap = g_bind.padCustom && g_bind.padMoveStick;
+            int mx = swap ? rsX : lsX, my = swap ? rsY : lsY, sx = swap ? lsX : rsX, sy = swap ? lsY : rsY;
+            int mv[4] = {0, 0, 0, 0}, sh[4] = {0, 0, 0, 0};
+            lsPlay = play; padMove = -1.f; stickNavDir = -1;
+            if (play && !wiz.isOpen()) {
+                int want[4] = {0, 0, 0, 0};
+                if (g_joyAccel) {   // analog movement: round dead zone, 8 directions, speed from the distance (moveCurve)
+                    float m = std::min(1.f, std::hypot((float)mx, (float)my) / 32767.f);
+                    if (m > 0.2f) {
+                        float ux = mx / 32767.f / m, uy = my / 32767.f / m;
+                        want[0] = ux < -0.383f; want[2] = ux > 0.383f; want[1] = uy < -0.383f; want[3] = uy > 0.383f;
+                        padMove = m;
+                    }
+                } else { want[0] = mx < -dead; want[2] = mx > dead; want[1] = my < -dead; want[3] = my > dead; }
+                int shw[4] = {sx < -dead, sy < -dead, sx > dead, sy > dead};
+                for (int k = 0; k < 4; k++) { mv[k] = want[k] ? dirCode(false, k) : 0; sh[k] = shw[k] ? dirCode(true, k) : 0; }
+            } else if (std::max(std::abs(lsX), std::abs(lsY)) > 16000) {
+                stickNavDir = std::abs(lsX) > std::abs(lsY) ? (lsX < 0 ? NAV_LEFT : NAV_RIGHT) : (lsY < 0 ? NAV_UP : NAV_DOWN);
             }
-            static const int kGame[4] = {'A', 'W', 'D', 'S'}, kMenu[4] = {37, 38, 39, 40};
             for (int k = 0; k < 4; k++) {
-                int code = want[k] ? (play ? kGame[k] : kMenu[k]) : 0;
-                if (lsHeld[k] != code) { if (lsHeld[k]) keySrc(SRC_LSTICK, lsHeld[k], false); if (code) keySrc(SRC_LSTICK, code, true); lsHeld[k] = code; }
+                if (mvHeld[k] != mv[k]) { if (mvHeld[k]) keySrc(SRC_LSTICK, mvHeld[k], false); if (mv[k]) keySrc(SRC_LSTICK, mv[k], true); mvHeld[k] = mv[k]; }
+                if (shHeld[k] != sh[k]) { if (shHeld[k]) keySrc(SRC_RSTICK, shHeld[k], false); if (sh[k]) keySrc(SRC_RSTICK, sh[k], true); shHeld[k] = sh[k]; }
             }
-        };
-        auto updateRightStick = [&]() {   // right stick: the shooting arrows
-            const int dead = 12000;
-            int want[4] = {rsX < -dead ? 37 : 0, rsY < -dead ? 38 : 0, rsX > dead ? 39 : 0, rsY > dead ? 40 : 0};
-            for (int k = 0; k < 4; k++) if (rsHeld[k] != want[k]) { if (rsHeld[k]) keySrc(SRC_RSTICK, rsHeld[k], false); if (want[k]) keySrc(SRC_RSTICK, want[k], true); rsHeld[k] = want[k]; }
         };
         onReleaseAll = [&]() {   // (the keys are already released: forget what the controller held)
-            for (int k = 0; k < 4; k++) lsHeld[k] = rsHeld[k] = 0;
-            padBtnHeld.clear(); padMove = -1.f;
+            for (int k = 0; k < 4; k++) { mvHeld[k] = shHeld[k] = 0; navDpad[k] = false; }
+            padBtnHeld.clear(); padMove = -1.f; dpadDir = -1; trigSent[0] = trigSent[1] = 0; kbSent.clear();
+        };
+        auto anyController = [&]() { for (int i = 0; i < SDL_NumJoysticks(); i++) if (SDL_IsGameController(i)) return true; return false; };
+        auto openRebind = [&]() {
+            bool avail[DEV_COUNT];
+            avail[DEV_KEYBOARD] = !kIsSwitch && (!kIsAndroid || sawKeyboard);
+            avail[DEV_PAD] = kIsSwitch || anyController();
+            avail[DEV_TOUCH] = touchUI;
+            int style = kIsSwitch ? 2 : 0;
+            for (int i = 0; i < SDL_NumJoysticks() && !kIsSwitch; i++) if (SDL_IsGameController(i)) {
+                SDL_GameControllerType t = SDL_GameControllerTypeForIndex(i);
+                style = (t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5) ? 1
+                      : (t == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO) ? 2 : 0;
+                break;
+            }
+            touch.releaseAll(nowSec()); releaseAllKeys();
+            wiz.open(avail, lastDevice, style);
+        };
+        auto stagePoint = [&](double px, double py, double& sx, double& sy) {   // window pixels -> stage
+            int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
+            Mat inv; stageToWindowFor(dw, dh).invert(inv); inv.apply(px, py, sx, sy);
         };
         auto pollInput = [&]() {
             SDL_Event e;
@@ -1064,6 +1186,14 @@ int main(int argc, char** argv) {
                     case SDL_APP_DIDENTERBACKGROUND: logicPaused = true; break;
                     case SDL_APP_WILLENTERFOREGROUND: case SDL_APP_DIDENTERFOREGROUND: logicPaused = false; break;
                     case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP:
+                        if (e.type == SDL_FINGERDOWN) { lastDevice = touchUI ? DEV_TOUCH : lastDevice; navOff(); }
+                        if (wiz.isOpen()) {   // rebinding screen: taps on its rows
+                            if (e.type == SDL_FINGERMOTION) break;
+                            int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh); double sx, sy;
+                            stagePoint(e.tfinger.x * dw, e.tfinger.y * dh, sx, sy);
+                            wiz.pointer(uiHitRow(sx, sy), e.type == SDL_FINGERDOWN ? 1 : 2);
+                            break;
+                        }
                         if (touchUI) {
                             TouchCtx c = touchCtx(); double px = e.tfinger.x * c.winW, py = e.tfinger.y * c.winH;
                             if (e.type == SDL_FINGERDOWN) touch.down((int64_t)e.tfinger.fingerId, px, py, c, nowSec());
@@ -1077,33 +1207,63 @@ int main(int argc, char** argv) {
                         break;
 #endif
                     case SDL_KEYDOWN: case SDL_KEYUP: {
-                        bool down = e.type == SDL_KEYDOWN;
-                        if (e.key.keysym.sym == SDLK_AC_BACK) { if (down && !e.key.repeat) backKey(); break; }
-                        if (down && !e.key.repeat && (e.key.keysym.sym == SDLK_F11 || (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
+                        bool down = e.type == SDL_KEYDOWN; SDL_Keycode sym = e.key.keysym.sym;
+                        if (sym == SDLK_AC_BACK) { if (down && !e.key.repeat) { if (wiz.isOpen()) wiz.nav(NAV_BACK); else backKey(); } break; }
+                        if (down && !e.key.repeat && (sym == SDLK_F11 || (sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
                             bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                             setFullscreen(!fs); pushIn({3, 0, 0, !fs, 0, 0}); break;
                         }
-                        if (down && !e.key.repeat && e.key.keysym.sym == SDLK_F3) { perfOn = !perfOn; perfLines.clear(); pw = PerfWin(); pwStart = nowSec(); if (perfOn) perfLog("--- diagnostics enabled (F3) ---\n"); break; }
-                        if (down && e.key.keysym.sym == SDLK_F12) { static int sn = 0; char nm[64]; snprintf(nm, sizeof nm, "screenshot_%d.bmp", ++sn); renderScreenshot((pref + nm).c_str()); break; }
-                        int c = sdlToFlash(e.key.keysym.sym);
-                        if (e.key.repeat && !down) break;
+                        if (down && !e.key.repeat && sym == SDLK_F3) { perfOn = !perfOn; perfLines.clear(); pw = PerfWin(); pwStart = nowSec(); if (perfOn) perfLog("--- diagnostics enabled (F3) ---\n"); break; }
+                        if (down && sym == SDLK_F12) { static int sn = 0; char nm[64]; snprintf(nm, sizeof nm, "screenshot_%d.bmp", ++sn); renderScreenshot((pref + nm).c_str()); break; }
+                        if (down && !e.key.repeat) { lastDevice = DEV_KEYBOARD; sawKeyboard = true; navOff(); }
+                        if (wiz.isOpen()) {
+                            if (!down) break;
+                            if (wiz.capturing()) { if (!e.key.repeat && !wiz.captureKey(sym) && sym == SDLK_ESCAPE) wiz.nav(NAV_BACK); break; }
+                            switch (sym) {
+                                case SDLK_UP: case SDLK_w: wiz.nav(NAV_UP); break;
+                                case SDLK_DOWN: case SDLK_s: wiz.nav(NAV_DOWN); break;
+                                case SDLK_LEFT: case SDLK_a: wiz.nav(NAV_LEFT); break;
+                                case SDLK_RIGHT: case SDLK_d: wiz.nav(NAV_RIGHT); break;
+                                case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: if (!e.key.repeat) wiz.nav(NAV_CONFIRM); break;
+                                case SDLK_ESCAPE: case SDLK_BACKSPACE: if (!e.key.repeat) wiz.nav(NAV_BACK); break;
+                                default: break;
+                            }
+                            break;
+                        }
+                        int sc = e.key.keysym.scancode;
+                        if (e.key.repeat) {   // (auto-repeat: as before)
+                            if (!down) break;
+                            auto it = kbSent.find(sc); int c = it == kbSent.end() ? 0 : it->second;
+                            if (c && (keyMask[c] & (1u << SRC_KEYBOARD))) pushIn({0, c, asciiOf(sym, e.key.keysym.mod & KMOD_SHIFT), true, 0, 0});
+                            break;
+                        }
+                        if (!down) { auto it = kbSent.find(sc); if (it != kbSent.end()) { if (it->second) keySrc(SRC_KEYBOARD, it->second, false); kbSent.erase(it); } break; }
+                        int c = sdlToFlash(sym);
                         if (!c) break;
-                        int asc = asciiOf(e.key.keysym.sym, e.key.keysym.mod & KMOD_SHIFT);
-                        if (e.key.repeat) { if (keyMask[c] & (1u << SRC_KEYBOARD)) pushIn({0, c, asc, true, 0, 0}); }   // (auto-repeat: as before)
-                        else keySrc(SRC_KEYBOARD, c, down, asc);
+                        Ctx cx = ctxNow();
+                        if (g_bind.kbCustom && (cx.play || cx.inGame)) {   // rebound keys (see controls.h)
+                            int a = kbActionOf(sym);
+                            if (a >= 0 && (cx.play || a == A_PAUSE)) c = gameCode(a, cx.frog, cx.lefty);
+                            else if (cx.play && isGameActionCode(c)) c = 0;   // an original key that now does nothing
+                        }
+                        if (kbSent.count(sc)) break;
+                        kbSent[sc] = c;
+                        if (c) keySrc(SRC_KEYBOARD, c, true, asciiOf(sym, e.key.keysym.mod & KMOD_SHIFT));
                         break;
                     }
                     case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: {
+                        if (e.type == SDL_MOUSEMOTION ? (e.motion.xrel || e.motion.yrel) : true) { navOff(); if (e.type == SDL_MOUSEBUTTONDOWN && !kIsAndroid && !kIsSwitch) lastDevice = DEV_KEYBOARD; }
                         int mx, my; SDL_GetMouseState(&mx, &my);
                         int ww, wh, dw, dh; SDL_GetWindowSize(win, &ww, &wh); SDL_GL_GetDrawableSize(win, &dw, &dh);
                         double px = mx * (double)dw / ww, py = my * (double)dh / wh;
-                        Mat inv; stageToWindowFor(dw, dh).invert(inv); double sx, sy; inv.apply(px, py, sx, sy);
+                        double sx, sy; stagePoint(px, py, sx, sy);
+                        if (wiz.isOpen()) { if (e.type != SDL_MOUSEMOTION) wiz.pointer(uiHitRow(sx, sy), e.type == SDL_MOUSEBUTTONDOWN ? 1 : 2); break; }
                         pushIn({1, e.type == SDL_MOUSEMOTION ? 0 : e.type == SDL_MOUSEBUTTONDOWN ? 1 : 2, 0, false, sx, sy});
                         break;
                     }
 #ifdef __SWITCH__
-                    // touch screen (handheld mode): in menus and in the pause screen, a tap = a mouse click
-                    // (the original game's buttons respond to the mouse). Does nothing during gameplay.
+                    // touch screen (handheld mode) with touch_controls = 0: in menus and in the pause screen, a tap = a
+                    // mouse click (the original game's buttons respond to the mouse). Does nothing during gameplay.
                     switchTouch: {
                         static SDL_FingerID active = -1;
                         const Snapshot* cs = renderCurrent();
@@ -1111,8 +1271,7 @@ int main(int argc, char** argv) {
                         if (e.type == SDL_FINGERDOWN) { if (active != -1 || play) break; active = e.tfinger.fingerId; }
                         else if (e.tfinger.fingerId != active) break;
                         int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
-                        double px = e.tfinger.x * dw, py = e.tfinger.y * dh;
-                        Mat inv; stageToWindowFor(dw, dh).invert(inv); double sx, sy; inv.apply(px, py, sx, sy);
+                        double sx, sy; stagePoint(e.tfinger.x * dw, e.tfinger.y * dh, sx, sy);
                         pushIn({1, 0, 0, false, sx, sy});                                   // move (for the "over" state)
                         if (e.type == SDL_FINGERDOWN) pushIn({1, 1, 0, false, sx, sy});
                         if (e.type == SDL_FINGERUP) { pushIn({1, 2, 0, false, sx, sy}); active = -1; }
@@ -1121,8 +1280,9 @@ int main(int argc, char** argv) {
 #endif
                     case SDL_CONTROLLERDEVICEADDED: SDL_GameControllerOpen(e.cdevice.which); break;
                     case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
-                        // same scheme as on Switch: the key depends on whether we are playing, paused or in a menu
-                        // (A confirms and B goes back in menus). The key sent on press is the one released.
+                        // same scheme as on Switch: the key depends on whether we are playing, paused or in a menu.
+                        // In menus and on the pause screen the D-pad, A and B drive the outline (menuui.cpp).
+                        // The key sent on press is the one released.
                         struct Map { int game, pause, menu; };
                         static const std::map<int, Map> kMap = {
                             {SDL_CONTROLLER_BUTTON_A, {40, 32, 32}}, {SDL_CONTROLLER_BUTTON_B, {39, 27, 27}},
@@ -1134,54 +1294,94 @@ int main(int argc, char** argv) {
                             {SDL_CONTROLLER_BUTTON_DPAD_LEFT, {'A', 37, 37}}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, {'D', 39, 39}},
                         };
                         bool d = e.type == SDL_CONTROLLERBUTTONDOWN; int btn = e.cbutton.button;
-                        auto it = kMap.find(btn); if (it == kMap.end()) break;
-                        if (d) {
-                            const Snapshot* cs = renderCurrent();
-                            int code = cs && cs->gameplay ? it->second.game : cs && cs->inGame ? it->second.pause : it->second.menu;
-                            if (!code || padBtnHeld.count(btn)) break;
-                            padBtnHeld[btn] = code;
-                            keySrc(SRC_BUTTONS, code, true, (code == 32 || code == 13 || code == 27) ? code : 0);
-                        } else {
+                        int dpad = btn == SDL_CONTROLLER_BUTTON_DPAD_UP ? 0 : btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN ? 1 : btn == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? 2 : btn == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ? 3 : -1;
+                        if (d) lastDevice = DEV_PAD;
+                        if (!d) {   // release: whatever the press sent
+                            if (dpad >= 0) { navDpad[dpad] = false; if (dpadDir == dpad) dpadDir = -1; }
                             auto h = padBtnHeld.find(btn); if (h == padBtnHeld.end()) break;
                             int code = h->second; padBtnHeld.erase(h);
                             bool still = false; for (auto& o : padBtnHeld) still |= o.second == code;
                             if (!still) keySrc(SRC_BUTTONS, code, false);
+                            break;
                         }
+                        if (wiz.isOpen()) {
+                            if (wiz.capturing()) { if (!wiz.capturePad(btn) && btn == SDL_CONTROLLER_BUTTON_B) wiz.nav(NAV_BACK); break; }   // (B cancels a keyboard capture)
+                            if (dpad >= 0) { navDpad[dpad] = true; dpadDir = dpad; }
+                            else if (btn == SDL_CONTROLLER_BUTTON_A || btn == SDL_CONTROLLER_BUTTON_START) wiz.nav(NAV_CONFIRM);
+                            else if (btn == SDL_CONTROLLER_BUTTON_B || btn == SDL_CONTROLLER_BUTTON_BACK) wiz.nav(NAV_BACK);
+                            break;
+                        }
+                        Ctx cx = ctxNow();
+                        if (!cx.play) {
+                            if (dpad >= 0) { navDpad[dpad] = true; dpadDir = dpad; break; }
+                            if (btn == SDL_CONTROLLER_BUTTON_A) { navSink(NAV_CONFIRM); break; }
+                            if (btn == SDL_CONTROLLER_BUTTON_B) { navSink(NAV_BACK); break; }
+                        }
+                        auto it = kMap.find(btn);
+                        int code;
+                        if (cx.play) code = padGameCode(btn, it == kMap.end() ? 0 : it->second.game);
+                        else if (cx.inGame) code = g_bind.padCustom && padActionOf(btn) == A_PAUSE ? 'P' : it == kMap.end() ? 0 : it->second.pause;
+                        else code = it == kMap.end() ? 0 : it->second.menu;
+                        if (!code || padBtnHeld.count(btn)) break;
+                        padBtnHeld[btn] = code;
+                        keySrc(SRC_BUTTONS, code, true, (code == 32 || code == 13 || code == 27) ? code : 0);
                         break;
                     }
                     case SDL_CONTROLLERAXISMOTION: {
                         int v = e.caxis.value;
-                        const Snapshot* cs = renderCurrent(); bool play = cs && cs->gameplay;
+                        bool play = ctxNow().play;
                         switch (e.caxis.axis) {
-                            case SDL_CONTROLLER_AXIS_LEFTX: lsX = v; updateLeftStick(play); break;
-                            case SDL_CONTROLLER_AXIS_LEFTY: lsY = v; updateLeftStick(play); break;
-                            case SDL_CONTROLLER_AXIS_RIGHTX: rsX = v; updateRightStick(); break;
-                            case SDL_CONTROLLER_AXIS_RIGHTY: rsY = v; updateRightStick(); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: keySrc(SRC_TRIGGERS, 'E', play && v > 8000); break;
-                            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: keySrc(SRC_TRIGGERS, 32, play && v > 8000, 32); break;
+                            case SDL_CONTROLLER_AXIS_LEFTX: lsX = v; updateSticks(play); break;
+                            case SDL_CONTROLLER_AXIS_LEFTY: lsY = v; updateSticks(play); break;
+                            case SDL_CONTROLLER_AXIS_RIGHTX: rsX = v; updateSticks(play); break;
+                            case SDL_CONTROLLER_AXIS_RIGHTY: rsY = v; updateSticks(play); break;
+                            case SDL_CONTROLLER_AXIS_TRIGGERLEFT: case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: {
+                                int t = e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0 : 1;
+                                bool on = v > 8000, was = trigOn[t]; trigOn[t] = on;
+                                if (on && !was) lastDevice = DEV_PAD;
+                                if (wiz.isOpen()) { if (on && !was && wiz.capturing()) wiz.capturePad(t ? PAD_RT : PAD_LT); break; }
+                                int code = on && play ? padGameCode(t ? PAD_RT : PAD_LT, t ? 32 : 'E') : 0;
+                                if (code != trigSent[t]) {
+                                    int src = t ? SRC_TRIGGER_R : SRC_TRIGGERS;
+                                    if (trigSent[t]) keySrc(src, trigSent[t], false);
+                                    if (code) keySrc(src, code, true, code == 32 ? 32 : 0);
+                                    trigSent[t] = code;
+                                }
+                                break;
+                            }
                         }
                         break;
                     }
                     default: break;
                 }
             }
-            {   // the game switched between playing and a menu (boss "VS" screen, pause, death...): sticks and D-pad
-                // directions being held now mean the other mode's keys (WASD <-> arrows)
-                const Snapshot* cs = renderCurrent(); bool play = cs && cs->gameplay;
-                if (play != lsPlay) updateLeftStick(play);
-                static const std::map<int, std::array<int, 3>> kDir = {
-                    {SDL_CONTROLLER_BUTTON_DPAD_UP, {'W', 38, 38}}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, {'S', 40, 40}},
-                    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, {'A', 37, 37}}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, {'D', 39, 39}}};
-                int mode = play ? 0 : cs && cs->inGame ? 1 : 2;
-                for (auto& h : padBtnHeld) {
-                    auto it = kDir.find(h.first); if (it == kDir.end()) continue;
-                    int code = it->second[mode];
-                    if (code == h.second) continue;
-                    int old = h.second; h.second = code;
-                    bool still = false; for (auto& o : padBtnHeld) still |= o.second == old;
-                    if (!still) keySrc(SRC_BUTTONS, old, false);
-                    keySrc(SRC_BUTTONS, code, true);
+            {   // the game switched between playing and a menu (boss "VS" screen, pause, death...): held sticks and
+                // D-pad directions change meaning (movement keys <-> the outline in menus)
+                Ctx cx = ctxNow(); bool play = cx.play && !wiz.isOpen();
+                if (play != lsPlay) {
+                    updateSticks(play);
+                    static const int kDpadBtn[4] = {SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT};
+                    static const int kDpadKey[4] = {'W', 'S', 'A', 'D'};
+                    for (int k = 0; k < 4; k++) {
+                        int btn = kDpadBtn[k];
+                        auto h = padBtnHeld.find(btn);
+                        if (!play && h != padBtnHeld.end()) {   // held while moving: now it moves the outline
+                            int code = h->second; padBtnHeld.erase(h);
+                            bool still = false; for (auto& o : padBtnHeld) still |= o.second == code;
+                            if (!still) keySrc(SRC_BUTTONS, code, false);
+                            navDpad[k] = true; dpadDir = k;
+                        } else if (play && navDpad[k] && h == padBtnHeld.end()) {   // held in the menu: now it moves
+                            navDpad[k] = false; if (dpadDir == k) dpadDir = -1;
+                            int code = padGameCode(btn, kDpadKey[k]);
+                            if (code) { padBtnHeld[btn] = code; keySrc(SRC_BUTTONS, code, true); }
+                        }
+                    }
                 }
+                // outline: auto-repeat of a held direction
+                int dir = play ? -1 : dpadDir >= 0 ? dpadDir : stickNavDir;
+                double now = nowSec();
+                if (dir != lastNavDir) { lastNavDir = dir; if (dir >= 0) { navSink(dir); navNext = now + 0.38; } }
+                else if (dir >= 0 && now >= navNext) { navSink(dir); navNext = now + 0.11; }
             }
 #ifdef __SWITCH__
             padPoll();
@@ -1224,6 +1424,17 @@ int main(int argc, char** argv) {
                 else if (j.op == "quit") running = false;
             }
             if (touchUI) touch.update(touchCtx(), nowSec());
+            {   // rebinding screen: opened from the game's Control options page (menuui.cpp), saved when closed
+                const Snapshot* cs = renderCurrent();
+                if (cs && cs->rebindRequests != lastRebindReq) { lastRebindReq = cs->rebindRequests; if (!wiz.isOpen()) openRebind(); }
+                wiz.tick(nowSec());
+                if (wiz.takeSaveRequest()) {
+                    bindingsSave([&](const std::string& k, const std::string& v) { saveIniValue(iniPath, k, v); });
+                    TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize);
+                    releaseAllKeys();
+                    logf("controls saved (keyboard %s, controller %s)\n", g_bind.kbCustom ? "custom" : "default", g_bind.padCustom ? "custom" : "default");
+                }
+            }
             {   // movement factor for the logic thread (joystick_acceleration): touch stick, else controller stick, else full
                 float tm = touchUI ? touch.moveAmount() : -1.f;
                 float k = !g_joyAccel ? 1.f : tm >= 0 ? moveCurve(tm, TouchControls::deadZone()) : padMove >= 0 ? moveCurve(padMove, 0.2f) : 1.f;
@@ -1274,7 +1485,12 @@ int main(int argc, char** argv) {
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
             double r0 = nowSec();
             renderFrame(dw, dh, alpha);
-            if (touchUI) {
+            if (cur && cur->focusOn && !wiz.isOpen()) {   // controller in a menu: the selected option
+                Mat m = stageToWindowFor(dw, dh); double x0, y0, x1, y1;
+                m.apply(cur->focusRect[0], cur->focusRect[1], x0, y0); m.apply(cur->focusRect[2], cur->focusRect[3], x1, y1);
+                renderFocusRect(x0, y0, x1, y1, nowSec());
+            }
+            if (touchUI && !wiz.isOpen()) {
                 TouchStick ts[2]; if (touch.sticks(ts)) renderTouchSticks(ts, 2);
 #ifdef __SWITCH__
                 const bool handheld = appletGetOperationMode() == AppletOperationMode_Handheld;   // (docked: no touch screen)

@@ -72,6 +72,10 @@ struct Snapshot {
     int entities = 0;
     float touchRects[4][4] = {};  // touch screens: bomb / active item / pill-card / pause HUD areas (stage coordinates)
     int touchMask = 0;            // which of them are on screen
+    bool focusOn = false;         // controller in a menu: outline around the selected option (stage coordinates)
+    float focusRect[4] = {};
+    int rebindRequests = 0;       // grows when the player asks for the rebinding screen (menuui.cpp)
+    bool frog = false, lefty = false;   // the game's AZERTY / lefty control options
     // computed by the renderer on adoption: uid → node index (open table, power of 2) and, per node, the
     // displacement relative to the previous tick (to detect jumps)
     std::vector<uint64_t> uidTable; uint32_t uidMask = 0;

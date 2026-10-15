@@ -888,8 +888,10 @@ static std::unordered_map<uint64_t, bool> g_learnSeen;
 // (the scale enters by quarter-octave step: keys a few hundredths apart are the same texture and are learned once)
 static uint64_t preHash(const PreKey& p) { int16_t qb = (int16_t)std::ceil(p.q100 / 100.0 - 1e-6); return (uint64_t)p.id | (uint64_t)p.kind << 16 | (uint64_t)p.abs << 24 | (uint64_t)p.variant << 32 | (uint64_t)(uint16_t)qb << 48; }
 static double winQ(int winH) { return 4.0 * std::log2(std::max(1, winH) / 720.0); }
+extern uint16_t g_synthCharBase;
 static void learnKey(const SnapNode& n, const TexKey& k, double scale) {
     if (!n.def || n.objKind == OK_EDITTEXT) return;   // (editable texts change: not preloaded)
+    if (n.def->id >= g_synthCharBase) return;         // (shapes made at run time: menuui.cpp)
     PreKey p; p.id = n.def->id; p.kind = n.objKind; p.abs = g_sceneTargetUid != 0; p.variant = (uint16_t)k.variant;
     double q = 4.0 * std::log2(std::max(1.0 / 64, std::min(64.0, scale)));   // (unrounded: the exact scale)
     p.q100 = (int16_t)std::lround((p.abs ? q : q - winQ(g_winH)) * 100);
@@ -1479,6 +1481,28 @@ void renderPauseButton(double x0, double y0, double x1, double y1) {
     if (g_pauseTex != g_batchTex) { flush(); g_batchTex = g_pauseTex; }
     Mat id; CX cx; cx.am = 0.8f;
     quad(g_pauseTex, id, x0, y0, x1, y1, cx);
+    flush();
+    g_batchTex = 0;
+}
+
+// ============================================================ controller focus in menus
+// An outline around the option a controller has selected (window pixels): dark red like the game's ink, two
+// pixels of paper-coloured halo so it reads on any background, gently pulsing.
+void renderFocusRect(double x0, double y0, double x1, double y1, double t) {
+    GLuint white = whiteTex(); Mat id;
+    if (white != g_batchTex) { flush(); g_batchTex = white; }
+    double th = std::max(2.0, std::round(g_winH / 300.0)), halo = std::max(1.0, std::round(th / 2));
+    float a = (float)(0.75 + 0.25 * std::sin(t * 5.0));
+    auto frame = [&](double e, double w, CX c) {
+        quad(white, id, x0 - e, y0 - e, x1 + e, y0 - e + w, c);
+        quad(white, id, x0 - e, y1 + e - w, x1 + e, y1 + e, c);
+        quad(white, id, x0 - e, y0 - e + w, x0 - e + w, y1 + e - w, c);
+        quad(white, id, x1 + e - w, y0 - e + w, x1 + e, y1 + e - w, c);
+    };
+    CX h; h.rm = 0.92f; h.gm = 0.89f; h.bm = 0.84f; h.am = 0.8f * a;   // (the shader premultiplies)
+    frame(th + halo, halo, h);
+    CX c; c.rm = 0.55f; c.gm = 0.16f; c.bm = 0.16f; c.am = a;
+    frame(th, th, c);
     flush();
     g_batchTex = 0;
 }

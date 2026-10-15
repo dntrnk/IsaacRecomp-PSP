@@ -856,6 +856,17 @@ static ButtonObj* buttonAt(double x, double y) {
 
 // touch screens (logic thread): is there a button under this stage point / is any button on screen at all?
 bool touchButtonAt(double x, double y) { return buttonAt(x, y) != nullptr; }
+// controller menu navigation (menuui.cpp)
+void visibleButtons(std::vector<ButtonObj*>& out) { collectButtons(vm.root, out, true); }
+ButtonObj* topButtonAt(double x, double y) { return buttonAt(x, y); }
+void debugListButtons() {   // (testing) eval buttons
+    std::vector<ButtonObj*> bs; collectButtons(vm.root, bs, true);
+    for (auto* b : bs) {
+        RectF r = stageBounds(b);
+        double a = 1; for (DisplayObject* p = b; p; p = p->parent) a *= p->cx.am;
+        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1);
+    }
+}
 bool touchAnyButton() {
     std::vector<ButtonObj*> bs; collectButtons(vm.root, bs, true);
     for (auto* b : bs) if (b->enabled && !b->removed) return true;

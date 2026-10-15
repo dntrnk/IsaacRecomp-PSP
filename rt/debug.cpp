@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <sstream>
 #include <vector>
+#include "menuui.h"
+#include "controls.h"
 namespace fl {
 static Value evalPath(const std::string& p) {
     Value cur((Object*)vm.root);
@@ -48,6 +50,17 @@ void debugEval(const std::string& e) {
     if (e.compare(0, 10, "shapeinfo ") == 0) { extern void debugShapeSubpaths(uint16_t); debugShapeSubpaths((uint16_t)atoi(e.c_str() + 10)); return; }
     if (e.compare(0, 5, "tree ") == 0) { int md = 3; char path[256] = {0}; sscanf(e.c_str() + 5, "%255s %d", path, &md); Value v = evalPath(path);
         if (v.isObj() && v.o->isDisplay()) dumpTree((DisplayObject*)v.o, 0, md); return; }
+    if (e.compare(0, 4, "nav ") == 0) { padNavEvent(atoi(e.c_str() + 4)); return; }   // controller navigation (menuui.cpp)
+    if (e.compare(0, 6, "rebind") == 0) {   // rebind [nav]: open the rebinding screen / send it a navigation code
+        static RebindScreen w;
+        if (e.compare(0, 11, "rebind key ") == 0) w.captureKey(atoi(e.c_str() + 11));
+        else if (e.compare(0, 11, "rebind pad ") == 0) w.capturePad(atoi(e.c_str() + 11));
+        else if (e == "rebind save") bindingsSave([](const std::string& k, const std::string& v) { logf("[ini] %s = %s\n", k.c_str(), v.c_str()); });
+        else if (e.size() > 7) w.nav(atoi(e.c_str() + 7));
+        else { bool av[DEV_COUNT] = {true, true, true}; w.open(av, DEV_KEYBOARD, 0); }
+        return;
+    }
+    if (e == "buttons") { extern void debugListButtons(); debugListButtons(); return; }
     if (e.compare(0, 4, "set ") == 0) {
         size_t sp = e.find(' ', 4); std::string path = e.substr(4, sp - 4), val = e.substr(sp + 1);
         size_t dot = path.find_last_of('.'); Value obj = evalPath(path.substr(0, dot));
