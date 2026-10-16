@@ -74,6 +74,7 @@ struct Snapshot {
     int touchMask = 0;            // which of them are on screen
     bool focusOn = false;         // controller in a menu: outline around the selected option (stage coordinates)
     float focusRect[4] = {};
+    uint32_t focusUid = 0;        // its display object: drawn with a light ink tint (render.cpp)
     int rebindRequests = 0;       // grows when the player asks for the rebinding screen (menuui.cpp)
     bool frog = false, lefty = false;   // the game's AZERTY / lefty control options
     // computed by the renderer on adoption: uid → node index (open table, power of 2) and, per node, the

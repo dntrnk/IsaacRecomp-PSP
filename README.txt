@@ -72,21 +72,22 @@ the active item, Q for card/pill, P or Esc to pause.
 - F3: performance diagnostics (see below).
 Controller (XInput / SDL): left stick or D-pad = move; right stick or A/B/X/Y = shoot;
 LB or left trigger = bomb; RB or right trigger = active item; right stick click = card/
-pill (Q); Start, Back or left stick click = pause. In menus and in the pause screen an
-outline shows the selected option: D-pad or left stick = move it, A (cross on PlayStation
+pill (Q); Start, Back or left stick click = pause. In menus and in the pause screen the
+selected option is written in red: D-pad or left stick = choose, A (cross on PlayStation
 controllers) = press it, B (circle) = go back / close the pause screen, Start = Enter.
 REBINDING: Options > "Controls" > REBIND CONTROLS (also from the pause screen's Options)
 opens a screen to change the controls of the device you are using - keyboard, controller
 or touch screen - with your device's own buttons. Pick an action and press the new key or
 button (it swaps places with whatever had it); RESET TO DEFAULTS restores the original
-layout. Controller: you can also choose which stick moves. Touch: which side moves and
-the joystick size. Saved in isaac.ini (bind_keyboard, bind_controller,
-controller_move_stick, touch_move_side, touch_joystick_size). While a device uses custom
+layout. Controller: you can also choose which stick moves. Touch: which side moves, the
+joystick size and its type (type 1: the base stays where the finger landed; type 2: the
+base follows the finger). Saved in isaac.ini (bind_keyboard, bind_controller,
+controller_move_stick, touch_move_side, touch_joystick_size, touch_joystick_type). While a device uses custom
 controls, the game's "Lefty Flip" and "Azerty" options no longer change it.
 
 MOVING SAVES BETWEEN THE FLASH GAME AND THIS VERSION
 ---------------------------------------------------
-Open save_converter.html (included in this package) in any web browser. It turns the
+Open tools/save_converter.html (included in this package) in any web browser. It turns the
 Flash game's so.sol into IsaacRecomp's save file and back, for all three versions,
 without uploading anything. Close the game before replacing a save and keep a copy of
 the old one. (Converter originally made by g333nza.)
@@ -185,13 +186,22 @@ Not compatible with Flash save data: unlocks start from scratch.
 
 CHANGES IN VERSION 12 (v1.3.0 public release numbering, in progress)
 --------------------------------------------------------------------
-- Controllers in menus: an outline shows the selected option; the D-pad/left stick moves
-  it, A (cross) presses it and B (circle) goes back or closes the pause screen. Works in
-  every menu of the three games, on PC, Android and Switch.
+- Controllers in menus: the selected option is written in red (the game's own rollover
+  art is shown too); the D-pad/left stick chooses the nearest option in that direction,
+  A (cross) presses it and B (circle) goes back or closes the pause screen. Works in every
+  menu of the three games, on PC, Android and Switch.
 - New: control rebinding (Options > Controls > REBIND CONTROLS) for keyboard,
   controller and touch screen, drawn inside the game. See CONTROLS.
 - New: save converter between the Flash game and this version, both directions, all
-  three versions (save_converter.html, based on the one made by g333nza).
+  three versions (tools/save_converter.html, based on the one made by g333nza).
+- Touch: new joystick type 2 (the base follows the finger), in the rebinding screen.
+- Touch: a finger kept on a joystick through a pause or the boss "VS" screen keeps
+  working when play resumes (Isaac used to stand still at the start of boss fights until
+  the finger was lifted).
+- The Hourglass (and other slowing effects): slowed bosses no longer fire twice per
+  attack, and the Widow no longer spawns twice the spiders.
+- Credits (main menu > Credits > Credits): a tap no longer skips the credits as soon as
+  they start (they returned to the menu at once, restarting the music).
 - Hearts: with more than 12 hearts the -LIFE- display now switches to its smaller
   24/48-heart layout as in the original, instead of the first hearts staying big and
   overlapping the rest.

@@ -77,8 +77,8 @@ In menus and the pause screen:
                               (– also resumes from pause)
   Touch screen (handheld)     tap menu and pause buttons (like the mouse on PC); on
                               screens without buttons (cutscenes) a tap continues.
-Menus with the controller: an outline shows the selected option; D-pad or left stick
-moves it, A presses it, B goes back (on the pause screen: resumes the game).
+Menus with the controller: the selected option is written in red; D-pad or left stick
+chooses another, A presses it, B goes back (on the pause screen: resumes the game).
 Rebinding: Options > "Controls" > REBIND CONTROLS lets you change which button does what
 (and which stick moves), and the touch joysticks' side and size. Saved in isaac.ini.
 Touch screen during play (handheld mode, as on Android):

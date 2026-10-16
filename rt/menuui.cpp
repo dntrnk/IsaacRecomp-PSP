@@ -14,6 +14,7 @@
 #include <cmath>
 #include <map>
 #include <mutex>
+#include <cctype>
 #include <cstdlib>
 #include "platform.h"
 
@@ -78,6 +79,46 @@ static uint16_t textField(float w, float size, uint32_t argb, int align) {
     e->readOnly = true; e->noSelect = true; e->useOutlines = true; e->hasText = true;
     return g_synth[key] = addChar(e);
 }
+#include "menuui_glyphs.inc"
+// A word written with the hand-drawn glyphs as one shape (strokes with round ends, like a marker). H = cap height.
+static uint16_t handwritten(const char* text, float H, uint32_t argb, float* outW = nullptr) {
+    char key[160]; snprintf(key, sizeof key, "h%s|%.1f|%08x", text, H, argb);
+    const float sw = 0.17f * H, spacing = 0.085f;
+    auto it = g_synth.find(key);
+    auto glyph = [](char c) -> const HandGlyph* {
+        for (auto& g : kHandGlyphs) if (g.c == c) return &g;
+        for (auto& g : kHandGlyphs) if (g.c == (char)tolower((unsigned char)c)) return &g;
+        return nullptr;
+    };
+    float x = 0;
+    for (const char* p = text; *p; p++) if (const HandGlyph* g = glyph(*p)) x += (g->w + spacing) * H;
+    if (outW) *outW = x;
+    if (it != g_synth.end()) return it->second;
+    auto* s = new ShapeDef(); s->type = CH_SHAPE;
+    ShapeLayer L; LineStyle ls; ls.width = sw; ls.argb = argb; ls.startCap = ls.endCap = 0; ls.join = 0; ls.noClose = true;
+    L.lines.push_back(ls);
+    Path path; uint32_t seed = 7;
+    auto jitter = [&]() { seed = seed * 1103515245u + 12345u; return ((seed >> 16) % 1000 / 1000.0f - 0.5f) * 0.03f; };
+    x = 0;
+    for (const char* p = text; *p; p++) {
+        const HandGlyph* g = glyph(*p); if (!g) continue;
+        float rot = jitter() * 1.2f, dy = jitter() * 0.6f;   // each letter a little off, as if written by hand
+        bool start = true;
+        for (int i = 0; i < g->n; i++) {
+            float gx = g->pts[2 * i], gy = g->pts[2 * i + 1];
+            if (std::isnan(gx)) { start = true; continue; }
+            float px = gx + jitter(), py = gy + jitter() + dy;
+            px += (py - 0.5f) * rot;
+            path.verbs.push_back(start ? 0 : 1); path.pts.push_back(x + px * H); path.pts.push_back(py * H);
+            start = false;
+        }
+        x += (g->w + spacing) * H;
+    }
+    L.linePaths.push_back(path);
+    s->bounds = {-sw, -sw, x + sw, H + sw};
+    s->layers.push_back(L);
+    return g_synth[key] = addChar(s);
+}
 static DisplayObject* put(MovieClip* parent, uint16_t id, int depth, double x, double y, const char* name = nullptr) {
     if (!id) return nullptr;
     PlaceCmd pc; pc.hasMatrix = true; pc.m.tx = x; pc.m.ty = y;
@@ -114,14 +155,9 @@ static void updateRebindLabel() {
     if (g_rebindLabel) return;
     // in the sheet's own coordinates: the two toggles' labels start at x ~ 73, rows at y ~ 76 and ~ 123;
     // the free line below them is at ~ 205 (above the gamepad doodle)
-    const char* text = "REBIND CONTROLS";
-    float w = 320;
-    if (CharDef* cd = g_movie.get(hudFontId())) if (cd->type == CH_FONT) {   // field as wide as the text (the outline hugs it)
-        const FontDef* f = (const FontDef*)cd; float adv = 0;
-        for (const char* p = text; *p; p++) { auto it = f->codeToIdx.find((unsigned char)*p); adv += it != f->codeToIdx.end() && it->second < (int)f->advances.size() ? f->advances[it->second] * 22 : 11; }
-        w = std::ceil(adv) + 8;
-    }
-    g_rebindLabel = putText(sheet, DEPTH_BIAS + 9000, 64, 186, w, 22, 0xff4a4744u, 0, text);
+    // written in the same place and size as the other two labels: their capitals start at x ~ 73, the rows are
+    // ~ 44 apart (Lefty Flip at y ~ 66, Azerty at ~ 110) and capitals are ~ 26 tall
+    g_rebindLabel = put(sheet, handwritten("Rebind Controls", 26, 0xff6a6662u), DEPTH_BIAS + 9000, 74, 155);
     if (g_rebindLabel) g_rebindLabel->name = intern("__rebind");
 }
 static bool labelHit(double sx, double sy) {
@@ -289,15 +325,30 @@ void padNavEvent(int code) {
     if (fresh) return;   // the first press only shows where the outline is
     static const double dirs[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
     double dx = dirs[code][0], dy = dirs[code][1];
+    // nearest option in that direction: first among those inside a 45-degree cone (or overlapping the current
+    // one sideways, e.g. the next word on the same line), then anything ahead. Distances between the facing edges,
+    // so a wide option next to a narrow one doesn't look farther than it is.
+    auto gap = [&](const Cand& c) {   // distance along the direction between the facing edges (can be < 0 if they overlap)
+        if (dx > 0) return c.r.x0 - f->r.x1; if (dx < 0) return f->r.x0 - c.r.x1;
+        if (dy > 0) return c.r.y0 - f->r.y1; return f->r.y0 - c.r.y1;
+    };
+    auto sideGap = [&](const Cand& c) {   // perpendicular separation (0 if their spans overlap)
+        double a0 = dx ? f->r.y0 : f->r.x0, a1 = dx ? f->r.y1 : f->r.x1, b0 = dx ? c.r.y0 : c.r.x0, b1 = dx ? c.r.y1 : c.r.x1;
+        return std::max(0.0, std::max(b0 - a1, a0 - b1));
+    };
     const Cand* best = nullptr; double bs = 1e30;
-    for (auto& c : cs) {
-        if (c.d == f->d) continue;
-        double vx = c.cx - f->cx, vy = c.cy - f->cy;
-        double along = vx * dx + vy * dy, side = std::fabs(vx * dy - vy * dx);
-        if (along < 4) continue;
-        double s = along + side * 2.2;
-        if (s < bs) { bs = s; best = &c; }
-    }
+    for (int pass = 0; pass < 2 && !best; pass++)
+        for (auto& c : cs) {
+            if (c.d == f->d) continue;
+            double vx = c.cx - f->cx, vy = c.cy - f->cy;
+            double along = vx * dx + vy * dy, side = std::fabs(vx * dy - vy * dx);
+            if (along < 4) continue;
+            double sg = sideGap(c);
+            if (pass == 0 && sg > 0 && side > along) continue;   // outside the cone and not on the same line
+            if (pass == 1 && side > along * 2) continue;          // (never sideways)
+            double s = std::max(0.0, gap(c)) + along * 0.25 + sg * 2.0;
+            if (s < bs) { bs = s; best = &c; }
+        }
     if (best) { g_focus = best->d; hover(*best); }
 }
 
@@ -330,6 +381,7 @@ void menuUiFill(Snapshot& s) {
     Value data = so.isObj() ? getMemK(so, intern("data")) : VUNDEF;
     if (data.isObj()) { s.frog = truthy(getMemK(data, intern("frog"))); s.lefty = truthy(getMemK(data, intern("left"))); }
     s.focusOn = g_focusShown;
+    s.focusUid = g_focusShown && g_focus ? g_focus->uid : 0;
     if (!g_focusShown) return;
     double pad = g_stageH / 160.0;
     s.focusRect[0] = (float)(g_focusRect.x0 - pad); s.focusRect[1] = (float)(g_focusRect.y0 - pad);

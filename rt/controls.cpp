@@ -134,6 +134,7 @@ void bindingsLoad(const std::function<std::string(const std::string&)>& get) {
     g_bind.touchSwap = trimmed(get("touch_move_side")) == "right";
     std::string ts = trimmed(get("touch_joystick_size"));
     g_bind.touchSize = ts == "small" ? 0 : ts == "large" ? 2 : 1;
+    g_bind.touchType = trimmed(get("touch_joystick_type")) == "2" ? 1 : 0;
 }
 
 void bindingsSave(const std::function<void(const std::string&, const std::string&)>& set) {
@@ -155,6 +156,7 @@ void bindingsSave(const std::function<void(const std::string&, const std::string
     set("controller_move_stick", g_bind.padCustom && g_bind.padMoveStick ? "right" : "");
     set("touch_move_side", g_bind.touchSwap ? "right" : "");
     set("touch_joystick_size", g_bind.touchSize == 0 ? "small" : g_bind.touchSize == 2 ? "large" : "");
+    set("touch_joystick_type", g_bind.touchType ? "2" : "");
 }
 
 // ---- names
@@ -207,7 +209,7 @@ void RebindScreen::build() {
     rows_.clear();
     rows_.push_back({0, 0});
     if (dev_ == DEV_PAD) rows_.push_back({2, 0});
-    if (dev_ == DEV_TOUCH) { rows_.push_back({3, 0}); rows_.push_back({4, 0}); }
+    if (dev_ == DEV_TOUCH) { rows_.push_back({3, 0}); rows_.push_back({7, 0}); rows_.push_back({4, 0}); }
     else for (int a = 0; a < A_COUNT; a++) rows_.push_back({1, a});
     rows_.push_back({5, 0});
     rows_.push_back({6, 0});
@@ -235,6 +237,7 @@ void RebindScreen::publish() {
             }
             case 2: u.label = "MOVE WITH"; u.value = g_bind.padMoveStick ? "RIGHT STICK" : "LEFT STICK"; break;
             case 3: u.label = "MOVE WITH"; u.value = g_bind.touchSwap ? "RIGHT SIDE" : "LEFT SIDE"; break;
+            case 7: u.label = "JOYSTICK TYPE"; u.value = g_bind.touchType ? "TYPE 2 - FOLLOWS" : "TYPE 1 - FIXED"; break;
             case 4: u.label = "JOYSTICK SIZE"; u.value = g_bind.touchSize == 0 ? "SMALL" : g_bind.touchSize == 2 ? "LARGE" : "NORMAL"; break;
             case 5: u.label = "RESET TO DEFAULTS"; break;
             case 6: u.label = "DONE"; break;
@@ -287,6 +290,7 @@ void RebindScreen::cycle(int row, int dir) {
     } else if (r.kind == 2) { g_bind.padMoveStick ^= 1; g_bind.padCustom = true; }
     else if (r.kind == 3) g_bind.touchSwap = !g_bind.touchSwap;
     else if (r.kind == 4) g_bind.touchSize = (g_bind.touchSize + (dir < 0 ? 2 : 1)) % 3;
+    else if (r.kind == 7) g_bind.touchType ^= 1;
 }
 
 void RebindScreen::activate(int row) {
@@ -297,7 +301,7 @@ void RebindScreen::activate(int row) {
         case 5:
             if (dev_ == DEV_KEYBOARD) g_bind.defaultsKb();
             else if (dev_ == DEV_PAD) g_bind.defaultsPad();
-            else { g_bind.touchSwap = false; g_bind.touchSize = 1; }
+            else { g_bind.touchSwap = false; g_bind.touchSize = 1; g_bind.touchType = 0; }
             break;
         case 6: close(); return;
         default: cycle(row, 1); break;
@@ -314,7 +318,7 @@ void RebindScreen::nav(int code) {
         case NAV_DOWN: sel_ = (sel_ + 1) % n; break;
         case NAV_LEFT: case NAV_RIGHT: {
             int k = rows_[sel_].kind;
-            if (k == 0 || (k >= 2 && k <= 4)) cycle(sel_, code == NAV_LEFT ? -1 : 1);
+            if (k == 0 || (k >= 2 && k <= 4) || k == 7) cycle(sel_, code == NAV_LEFT ? -1 : 1);
             break;
         }
         case NAV_CONFIRM: activate(sel_); return;

@@ -306,8 +306,10 @@
   direction (distance along + 2.2 x sideways), hovers it with a mouse move (the game's own rollover art) and clicks it
   with a synthetic mouse down/up at a point inside its hit shape. B: `_root.paus` on frame 2 (the pause screen) ->
   P (resume), else Escape (the game's Back buttons have `keyPress "<Escape>"`). Screens without buttons get arrow /
-  Space / Escape pulses (3 ticks). The snapshot carries the focus rect; `renderFocusRect` draws it (dark red, paper
-  halo, pulsing). Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
+  Space / Escape pulses (3 ticks). The snapshot carries the focused object's uid; the renderer applies a color
+  transform to its subtree that keeps the menus' paper colour and turns their grey ink dark red (per channel linear
+  map). Direction choice: candidates inside a 45-degree cone or on the same line first (distance between facing
+  edges + perpendicular gap), then anything ahead within 2:1. Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
   game switches between gameplay and a menu (re-evaluated every frame). Headless: `ISAAC_MENUUI=1` + `eval nav N`.
 - "REBIND CONTROLS" entry: `_root.paus` (pauss in menus, hud.paus in a run) frame 8 is "Control options" in the
   three games (same layout); a synthesized text field is placed in it at script depth (local 64,186), removed on
@@ -331,3 +333,17 @@
   `cocks = true` to Flash saves (otherwise the Flash game restores stats from its serial.txt backup); empty cols/boss
   slots become 0 in Flash and undefined in IsaacRecomp, like each game writes them. Tested both ways and round trips
   on saves of the three versions.
+
+## v1.3 follow-ups
+- "Rebind controls" label: written with hand-drawn stroke glyphs (`rt/menuui_glyphs.inc`, original artwork; small
+  caps like the game's marker labels) as one synthesized line shape, cap height 26 at (74,155) in the options sheet.
+  The game's own menu labels are plain shapes (no font to reuse).
+- The Hourglass: slowed enemies advance their animation only on even ticks (`trgnextd` skips `nextFrame` when
+  `trg.free && slow > 0 && !fra2`), while attacks fire on `trg.d.d._currentframe == N`, so each attack frame was seen
+  on two ticks. `trgnextd` is wrapped natively: on a held tick the clip gets `holdTick`, and `_currentframe` reads
+  N + 0.5 for the rest of that tick (equality and end-of-animation checks fail, range checks still pass).
+- Touch: a gameplay <-> menu switch no longer drops the joysticks; their keys are released and re-pressed from the
+  finger's last position when play resumes (`Stick::fx/fy`). Joystick type 2: the base is dragged so the finger is
+  never farther than the radius.
+- Touch taps: whether a tap may become Space is decided by the screen at finger-down (`tapOnButtons`): the tap's own
+  click could change the screen first (Credits button -> credits, which a Space skips).

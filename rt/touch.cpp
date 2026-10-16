@@ -6,8 +6,8 @@
 namespace fl {
 
 static const double kMinHold = 0.09;
-static bool g_swap = false; static double g_sizeK = 0.12;
-void TouchControls::setLayout(bool swapSides, int size) { g_swap = swapSides; g_sizeK = size <= 0 ? 0.09 : size >= 2 ? 0.15 : 0.12; }
+static bool g_swap = false, g_follow = false; static double g_sizeK = 0.12;
+void TouchControls::setLayout(bool swapSides, int size, int type) { g_swap = swapSides; g_sizeK = size <= 0 ? 0.09 : size >= 2 ? 0.15 : 0.12; g_follow = type == 1; }
 static const double kDead = 0.18;      // dead zone (fraction of the radius)   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
 
 bool TouchControls::toStage(const TouchCtx& c, double px, double py, double& sx, double& sy) {
@@ -25,13 +25,18 @@ void TouchControls::press(int code, bool down) {
 // joystick direction -> keys. Movement: 8 directions (WASD). Shooting: 4 directions (the game shoots along one
 // axis; the dominant one wins, with some hysteresis so it doesn't flicker on the diagonal).
 void TouchControls::steer(Stick& s, int which, double px, double py) {
+    s.fx = px; s.fy = py;
     double dx = px - s.cx, dy = py - s.cy, d = std::hypot(dx, dy);
-    // the base stays where the finger first landed; the knob stops at its edge
+    if (g_follow && d > s.r) {   // joystick type 2: the base follows the finger (it never gets further than the edge)
+        s.cx = px - dx / d * s.r; s.cy = py - dy / d * s.r;
+        dx = px - s.cx; dy = py - s.cy; d = s.r;
+    }
+    // type 1: the base stays where the finger first landed; the knob stops at its edge
     double kd = std::min(d, s.r), k = d > 0 ? kd / d : 0;
     s.kx = s.cx + dx * k; s.ky = s.cy + dy * k;
     int want[4] = {0, 0, 0, 0};   // left, up, right, down
     s.mag = (float)(kd / s.r);
-    if (d > s.r * kDead) {
+    if (d > s.r * kDead && lastPlay_) {   // (outside gameplay a held stick is only tracked, see update)
         double ux = dx / d, uy = dy / d;
         if (which == 0) {
             const double t = 0.383;   // sin 22.5 deg: 8 sectors
@@ -127,7 +132,15 @@ void TouchControls::releaseAll(double now) {
 }
 
 void TouchControls::update(const TouchCtx& c, double now) {
-    if (c.gameplay != lastPlay_) { releaseAll(now); lastPlay_ = c.gameplay; }   // (pause, death, room transition to a menu...)
+    if (c.gameplay != lastPlay_) {
+        // pause, boss "VS" screen, death...: the HUD buttons and the menu finger are let go; a finger still on a
+        // joystick keeps it - its keys are released and pressed again when play resumes (before, the joystick
+        // vanished and Isaac stood still after the boss intro until the finger was lifted and put down again)
+        lastPlay_ = c.gameplay;
+        for (int w = 0; w < 2; w++) if (st_[w].id != -1) steer(st_[w], w, st_[w].fx, st_[w].fy);
+        for (auto& h : hold_) if (h.code) { press(h.code, false); h = Hold(); }
+        menuId_ = -1;
+    }
     for (auto& h : hold_) if (h.code && h.up && now - h.since >= kMinHold) { press(h.code, false); h = Hold(); }
 }
 

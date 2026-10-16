@@ -146,7 +146,11 @@ static Value getDisplayProp(DisplayObject* d, int idx) {
         case 1: return Value(d->m.ty);
         case 2: return Value(d->sx * 100.0);
         case 3: return Value(d->sy * 100.0);
-        case 4: return Value((double)(d->kind == OK_CLIP ? std::max(1, ((MovieClip*)d)->cur) : 1));
+        case 4: {
+            if (d->kind != OK_CLIP) return Value(1.0);
+            MovieClip* c = (MovieClip*)d;
+            return Value((double)std::max(1, c->cur) + (c->holdTick == g_player.tick + 1 ? 0.5 : 0.0));
+        }
         case 5: case 12: return Value((double)(d->kind == OK_CLIP ? ((MovieClip*)d)->def->nframes : 1));
         case 6: return Value((double)d->cx.am * 100.0);
         case 7: return VB(d->visible);

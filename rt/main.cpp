@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
             size_t eq = t.find('='); if (eq != std::string::npos) kv[trim(t.substr(0, eq))] = trim(t.substr(eq + 1));
         }
         bindingsLoad([&](const std::string& k) { auto it = kv.find(k); return it == kv.end() ? std::string() : it->second; });
-        TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize);
+        TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize, g_bind.touchType);
     }
     std::string forcedGame;   // --game og|wotl|eternal (testing, and restart after "Delete save")
     bool headless = false, norender = false, stats = false, perfStart = false; int maxFrames = -1; uint32_t monkeySeed = 0; std::string wavPath; std::vector<ScriptCmd> script; std::string shotPrefix;
@@ -862,7 +862,8 @@ int main(int argc, char** argv) {
             setThreadRole(ROLE_LOGIC);
             double base = nowSec(); uint64_t n = 0;
             std::vector<InputEv> evs;
-            uint32_t tapSpaceUntil = 0;   // touch: Space pressed by a tap on a screen without buttons, released at this tick
+            uint32_t tapSpaceUntil = 0;
+            bool tapOnButtons = false;    // touch: the last mouse-down happened on a screen with buttons   // touch: Space pressed by a tap on a screen without buttons, released at this tick
             while (logicRun) {
                 if (flushReq.load() != flushDone.load()) { int r = flushReq.load(); sharedObjectFlushAll(); flushDone = r; }
                 if (logicPaused) { SDL_Delay(20); base = nowSec() - n * dt; continue; }   // (frozen while in the background)
@@ -883,13 +884,18 @@ int main(int argc, char** argv) {
                 for (auto& ev : evs) {
                     if (inputLog) logf("[input] tick %u type %d code %d down %d at %.0f,%.0f\n", g_player.tick, ev.type, ev.code, ev.down, ev.x, ev.y);
                     if (ev.type == 0) keyEvent(ev.code, ev.ascii, ev.down);
-                    else if (ev.type == 1) { menuMouse(ev.x, ev.y, ev.code); mouseEvent(ev.x, ev.y, ev.code); }
+                    else if (ev.type == 1) {
+                        if (ev.code == 1) tapOnButtons = touchButtonAt(ev.x, ev.y) || touchAnyButton();   // (see type 4)
+                        menuMouse(ev.x, ev.y, ev.code); mouseEvent(ev.x, ev.y, ev.code);
+                    }
                     else if (ev.type == 5) padNavEvent(ev.code);   // controller in menus (menuui.cpp)
                     else if (ev.type == 3) recompFullscreenChanged(ev.down);
                     else if (ev.type == 4) {
                         // a tap in a menu already went through as a mouse click; if there is nothing clickable on screen
                         // (cutscenes, title cards, death screen...) it means "continue": Space, held for a few ticks
-                        if (!touchButtonAt(ev.x, ev.y) && !touchAnyButton() && !tapSpaceUntil) { keyEvent(32, 32, true); tapSpaceUntil = g_player.tick + 3; }
+                        // (decided by the screen when the finger went down: the tap's own click may have just changed the
+                        // screen - the menu's Credits button starts the credits, and a Space there skips them at once)
+                        if (!tapOnButtons && !touchButtonAt(ev.x, ev.y) && !touchAnyButton() && !tapSpaceUntil) { keyEvent(32, 32, true); tapSpaceUntil = g_player.tick + 3; }
                     }
                     else for (int k = 1; k < 256; k++) if (g_player.keys[k]) keyEvent(k, 0, false);
                 }
@@ -1430,7 +1436,7 @@ int main(int argc, char** argv) {
                 wiz.tick(nowSec());
                 if (wiz.takeSaveRequest()) {
                     bindingsSave([&](const std::string& k, const std::string& v) { saveIniValue(iniPath, k, v); });
-                    TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize);
+                    TouchControls::setLayout(g_bind.touchSwap, g_bind.touchSize, g_bind.touchType);
                     releaseAllKeys();
                     logf("controls saved (keyboard %s, controller %s)\n", g_bind.kbCustom ? "custom" : "default", g_bind.padCustom ? "custom" : "default");
                 }
@@ -1485,11 +1491,6 @@ int main(int argc, char** argv) {
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
             double r0 = nowSec();
             renderFrame(dw, dh, alpha);
-            if (cur && cur->focusOn && !wiz.isOpen()) {   // controller in a menu: the selected option
-                Mat m = stageToWindowFor(dw, dh); double x0, y0, x1, y1;
-                m.apply(cur->focusRect[0], cur->focusRect[1], x0, y0); m.apply(cur->focusRect[2], cur->focusRect[3], x1, y1);
-                renderFocusRect(x0, y0, x1, y1, nowSec());
-            }
             if (touchUI && !wiz.isOpen()) {
                 TouchStick ts[2]; if (touch.sticks(ts)) renderTouchSticks(ts, 2);
 #ifdef __SWITCH__

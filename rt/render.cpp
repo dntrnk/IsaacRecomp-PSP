@@ -759,6 +759,12 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     Mat m = parent * local;
     CX cx = maskPass ? CX() : pcx * (p ? lerpCX(p->cx, n.cx, (float)g_alpha) : n.cx);
     if (!maskPass && cx.am <= 0 && cx.aa <= 0) return;
+    if (!maskPass && n.uid && n.uid == g_curSnap->focusUid) {
+        // option selected with a controller (menuui.cpp): its grey ink turns dark red, the paper stays as it is
+        // (per channel, a linear map that keeps the menus' paper colour and sends their ink to the target)
+        CX t; t.rm = 0.677f; t.ra = 0.286f * 255; t.gm = 1.364f; t.ga = -0.313f * 255; t.bm = 1.356f; t.ba = -0.288f * 255;
+        cx = t * cx;
+    }
     if (!maskPass && n.blur && g_renderCfg.filters && n.kind != SN_BITMAP) {
         size_t at = g_cmds.size();
         Cmd f; f.op = C_FILTER; f.node = i;
@@ -1481,28 +1487,6 @@ void renderPauseButton(double x0, double y0, double x1, double y1) {
     if (g_pauseTex != g_batchTex) { flush(); g_batchTex = g_pauseTex; }
     Mat id; CX cx; cx.am = 0.8f;
     quad(g_pauseTex, id, x0, y0, x1, y1, cx);
-    flush();
-    g_batchTex = 0;
-}
-
-// ============================================================ controller focus in menus
-// An outline around the option a controller has selected (window pixels): dark red like the game's ink, two
-// pixels of paper-coloured halo so it reads on any background, gently pulsing.
-void renderFocusRect(double x0, double y0, double x1, double y1, double t) {
-    GLuint white = whiteTex(); Mat id;
-    if (white != g_batchTex) { flush(); g_batchTex = white; }
-    double th = std::max(2.0, std::round(g_winH / 300.0)), halo = std::max(1.0, std::round(th / 2));
-    float a = (float)(0.75 + 0.25 * std::sin(t * 5.0));
-    auto frame = [&](double e, double w, CX c) {
-        quad(white, id, x0 - e, y0 - e, x1 + e, y0 - e + w, c);
-        quad(white, id, x0 - e, y1 + e - w, x1 + e, y1 + e, c);
-        quad(white, id, x0 - e, y0 - e + w, x0 - e + w, y1 + e - w, c);
-        quad(white, id, x1 + e - w, y0 - e + w, x1 + e, y1 + e - w, c);
-    };
-    CX h; h.rm = 0.92f; h.gm = 0.89f; h.bm = 0.84f; h.am = 0.8f * a;   // (the shader premultiplies)
-    frame(th + halo, halo, h);
-    CX c; c.rm = 0.55f; c.gm = 0.16f; c.bm = 0.16f; c.am = a;
-    frame(th, th, c);
     flush();
     g_batchTex = 0;
 }

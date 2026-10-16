@@ -60,6 +60,7 @@ struct ButtonObj final : DisplayObject {
 struct MovieClip final : DisplayObject {
     SpriteDef* def = nullptr;
     int cur = 0;                 // current frame (1-based; 0 = uninitialized)
+    uint32_t holdTick = 0;       // (patches.cpp, slowed enemies) _currentframe reads cur + 0.5 during this tick (+1)
     bool playing = true, initialized = false, inExec = false;
     std::vector<DisplayObject*> kids;          // sorted by depth
     std::unordered_map<Str*, DisplayObject*> byName;

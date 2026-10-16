@@ -27,6 +27,7 @@ struct Bindings {
     int padMoveStick = 0;         // 0: left stick moves, right stick shoots; 1: swapped
     bool touchSwap = false;       // touch: movement joystick on the right half
     int touchSize = 1;            // touch joysticks: 0 small, 1 normal, 2 large
+    int touchType = 0;            // touch joysticks: 0 fixed base (type 1), 1 base follows the finger (type 2)
     Bindings() { defaultsKb(); defaultsPad(); }
     void defaultsKb();
     void defaultsPad();
@@ -65,7 +66,7 @@ public:
     void tick(double now);            // capture timeout, blinking
     bool takeSaveRequest() { bool r = saveReq_; saveReq_ = false; return r; }
 private:
-    struct Row { int kind; int arg; };   // kind: 0 device, 1 action, 2 stick side, 3 touch side, 4 touch size, 5 reset, 6 done
+    struct Row { int kind; int arg; };   // kind: 0 device, 1 action, 2 stick side, 3 touch side, 4 touch size, 5 reset, 6 done, 7 touch type
     bool open_ = false, avail_[DEV_COUNT] = {}, saveReq_ = false;
     int dev_ = DEV_KEYBOARD, sel_ = 0, capture_ = -1, padStyle_ = 0, pressRow_ = -3;
     double captureUntil_ = 0, now_ = 0; bool blink_ = false;

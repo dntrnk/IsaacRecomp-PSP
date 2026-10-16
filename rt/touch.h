@@ -37,9 +37,9 @@ public:
     int sticks(TouchStick out[2]) const;          // what to draw
     float moveAmount() const;                     // movement stick: how far it is pushed (0..1), -1 = not moving
     static float deadZone();
-    static void setLayout(bool swapSides, int size);   // movement stick on the right half; joystick size 0..2
+    static void setLayout(bool swapSides, int size, int type);   // movement stick on the right half; size 0..2; type 0 fixed base, 1 follows the finger
 private:
-    struct Stick { int64_t id = -1; double cx = 0, cy = 0, kx = 0, ky = 0, r = 0; float mag = 0; int keys[4] = {0, 0, 0, 0}; };
+    struct Stick { int64_t id = -1; double cx = 0, cy = 0, kx = 0, ky = 0, r = 0, fx = 0, fy = 0; float mag = 0; int keys[4] = {0, 0, 0, 0}; };
     struct Hold { int64_t id = -1; int code = 0; double since = 0; bool up = false; };
     TouchSink out_;
     Stick st_[2];                 // 0 = move (left), 1 = shoot (right)
