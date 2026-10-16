@@ -102,7 +102,9 @@ at startup. Each version keeps its own save file.
 - **Native 1080p / 4K**, with no thin white seams between colored areas (shapes are rasterized the way Flash does it).
 - **No pop-in**: graphics are prepared in the background while the opening cutscene plays.
 - **Smooth room transitions**, with no sudden jumps after a hiccup.
-- **Controller support** without external tools. Menus and the pause screen work with the controller alone.
+- **Controller support** without external tools. Every menu works with the controller alone: the selected option is
+  written in red, A/✕ presses it and B/◯ goes back.
+- **Control rebinding** inside the game (*Options → Controls → Rebind controls*) for keyboard, controller and touch.
 - **Analog movement**: with a stick, Isaac's speed follows how far you push it, like in *Rebirth* (it can be
   turned off).
 - **Touch controls** on Android and on Switch in handheld mode: floating joysticks, tappable HUD and a pause button.
@@ -111,6 +113,7 @@ at startup. Each version keeps its own save file.
 - **Fullscreen or windowed** (F11 or Alt+Enter), fitted to your desktop's usable area.
 - **Built-in performance overlay** (F3).
 - **Original, Wrath of the Lamb and Eternal Edition** in a single program.
+- **Save converter** to bring your progress from the Flash version (and back).
 
 ## 📦 Installation (PC)
 
@@ -147,6 +150,13 @@ Go to **[Releases](../../releases)** and grab the package for your system:
 
 **Requirements:** 64-bit Windows or Linux, and a graphics card that supports OpenGL 3.3.
 
+## 💾 Bringing your Flash saves over
+
+Every package includes **`tools/save_converter.html`**: open it in any web browser (it works offline, nothing is uploaded).
+It turns the Flash game's `so.sol` into the IsaacRecomp save file and back, for the original game, Wrath of the Lamb
+and Eternal Edition. Stats, items, secrets, bosses and unlock order carry over. Close the game and back up your save
+before replacing it. The converter was originally made by [g333nza](https://github.com/g333nza).
+
 ## 🎮 PC controls
 
 The original controls, plus controller support. Controller buttons adapt to whether you are playing, paused or in
@@ -165,6 +175,12 @@ a menu:
 | Screenshot           | `F12`                 | —                             | —                               |
 | Performance overlay  | `F3`                  | —                             | —                               |
 
+In menus, the selected option is **written in red**; the D-pad or left stick chooses another, the controller presses it with
+**A** (✕ on PlayStation controllers) and goes back with **B** (◯), which also closes the pause screen.
+
+**Rebinding:** *Options → Controls → Rebind controls* (from the main menu or the pause screen) changes the controls of
+the device you are playing with. Pick an action and press the new key or button; *Reset to defaults* restores the
+original layout. With a controller you can also choose which stick moves.
 ## 📱 Android
 
 The same native recomp, packaged as an APK. It runs the game on the 960×720 stage used on Switch, rendered with
@@ -196,7 +212,9 @@ OpenGL ES 3.0 and scaled to fill the screen.
 | Pause                | The button next to **-LIFE-**, or the back button / gesture                 |
 | Menus                | Tap the options; on screens without options (cutscenes, title cards) a tap continues |
 
-The joysticks are semi-transparent, stay where your finger first landed and disappear when you lift it.
+The joysticks are semi-transparent, stay where your finger first landed and disappear when you lift it. Which side
+moves, the joystick size and its type (fixed base, or a base that follows the finger) can be changed in
+*Options → Controls → Rebind controls*.
 **Bluetooth and USB controllers** work exactly as on PC, and can be mixed with touch at any time.
 
 **Performance:** the program renders at 720 lines and, if the device can't keep 60 fps during play, steps down to
@@ -211,7 +229,7 @@ through Android's low-latency audio path. To choose the resolution yourself, set
 
 ## 🎮 Nintendo Switch (homebrew)
 
-The same native recomp, built as a homebrew application (`.nro`, version 1.2.0). It contains no code or assets from
+The same native recomp, built as a homebrew application (`.nro`, version 1.3.0). It contains no code or assets from
 Nintendo or from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
 
 **You need:**
@@ -246,8 +264,10 @@ on its own CPU core, and new graphics are prepared in the background on another 
 | Card / pill              | R                                         |
 | Restart the current run  | Hold ZR for 5 seconds                     |
 | Pause                    | + or −                                    |
-| Menus                    | Stick / D-pad, A to accept, B to go back  |
+| Menus                    | Stick / D-pad choose (in red), A to accept, B to go back |
 | Performance overlay      | L3 + R3                                   |
+
+Buttons can be changed in *Options → Controls → Rebind controls*.
 
 **Touch screen (handheld mode):** the same touch controls as on [Android](#-android): joysticks on the left and
 right halves of the screen, taps on the bomb counter, active item and card/pill, a pause button next to **-LIFE-**,
@@ -274,6 +294,7 @@ and taps in menus. The pause button is only shown in handheld mode.
 | `joystick_acceleration` | `1`      | Analog movement: speed follows how far the stick is pushed (full speed at ¾ of its travel). `0` = always full speed |
 | `touch_controls`        | `1`      | Android / Switch: `0` turns off the touch joysticks, HUD taps and pause button |
 | `render_height`         | `0`      | Android: rendering resolution (`0` = automatic; `1080`, `720`, `600`, `540`, `480`) |
+| `bind_keyboard`, `bind_controller`, `controller_move_stick`, `touch_move_side`, `touch_joystick_size`, `touch_joystick_type` | (empty) | Written by the rebinding screen; empty = original controls |
 
 **Save files:**
 
@@ -478,6 +499,7 @@ The Android APK is also built automatically by **GitHub Actions** (*Actions → 
 - **whylurking**: creator of the recomp.
 - **Artificial Intelligence** ([Claude](https://claude.ai), by Anthropic): development assistance.
 - **Edmund McMillen and Florian Himsl**: creators of *The Binding of Isaac*.
+- **[g333nza](https://github.com/g333nza)**: the original save converter.
 - **[Ruffle](https://github.com/ruffle-rs/ruffle)**: reference for AVM1 semantics.
 - **[JPEXS FFDec](https://github.com/jindrapetrik/jpexs-decompiler)**: decompiler used by the tooling.
 - **[SDL2](https://www.libsdl.org/)**, **[PlutoVG](https://github.com/sammycage/plutovg)**,

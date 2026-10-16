@@ -146,7 +146,11 @@ static Value getDisplayProp(DisplayObject* d, int idx) {
         case 1: return Value(d->m.ty);
         case 2: return Value(d->sx * 100.0);
         case 3: return Value(d->sy * 100.0);
-        case 4: return Value((double)(d->kind == OK_CLIP ? std::max(1, ((MovieClip*)d)->cur) : 1));
+        case 4: {
+            if (d->kind != OK_CLIP) return Value(1.0);
+            MovieClip* c = (MovieClip*)d;
+            return Value((double)std::max(1, c->cur) + (c->holdTick == g_player.tick + 1 ? 0.5 : 0.0));
+        }
         case 5: case 12: return Value((double)(d->kind == OK_CLIP ? ((MovieClip*)d)->def->nframes : 1));
         case 6: return Value((double)d->cx.am * 100.0);
         case 7: return VB(d->visible);
@@ -268,10 +272,12 @@ static DisplayObject* createForChar(uint16_t id) {
 static void buttonSetState(ButtonObj* b, int state);
 
 void applyPlace(DisplayObject* d, const PlaceCmd& pc) {
-    if (!d->scriptXform) {
-        if (pc.hasMatrix) d->setMatrix(pc.m);
-        if (pc.hasCx) d->cx = pc.cx;
-    }
+    // Flash Player keeps applying the timeline's matrix to an object whose color was set through
+    // Transform.colorTransform (only its color stops following the timeline): the game recolors the HUD hearts
+    // every tick and then switches -LIFE- to its 24/48-heart layout with gotoAndStop, which must move/shrink them.
+    // (Ruffle locks the whole PlaceObject here; the original game shows the hearts re-laid out.)
+    if (!d->scriptXform && pc.hasMatrix) d->setMatrix(pc.m);
+    if (!d->scriptXform && !d->scriptColor && pc.hasCx) d->cx = pc.cx;
     if (pc.hasRatio) d->ratio = pc.ratio;
     if (pc.hasFilters) d->filters = pc.filters;
     if (pc.hasBlend) d->blend = pc.blend;
@@ -717,6 +723,8 @@ static void boundsInto(DisplayObject* d, const Mat& m, RectF& r) {
 }
 RectF localBounds(DisplayObject* d) { RectF r; boundsInto(d, d->m, r); return r; }
 RectF stageBounds(DisplayObject* d) { RectF r; boundsInto(d, worldMatrix(d), r); return r; }
+// a button's hit area in stage coordinates (for buttons that draw nothing themselves: invisible hit zones)
+RectF hitStageBounds(ButtonObj* b) { RectF r; Mat w = worldMatrix(b); for (auto* k : b->hitKids) boundsInto(k, w * k->m, r); return r; }
 
 // ============================================================ hitTest
 static bool pointInPolys(const std::vector<std::vector<float>>& polys, double x, double y) {
@@ -854,6 +862,18 @@ static ButtonObj* buttonAt(double x, double y) {
 
 // touch screens (logic thread): is there a button under this stage point / is any button on screen at all?
 bool touchButtonAt(double x, double y) { return buttonAt(x, y) != nullptr; }
+// controller menu navigation (menuui.cpp)
+void visibleButtons(std::vector<ButtonObj*>& out) { collectButtons(vm.root, out, true); }
+ButtonObj* topButtonAt(double x, double y) { return buttonAt(x, y); }
+void debugListButtons() {   // (testing) eval buttons
+    std::vector<ButtonObj*> bs; collectButtons(vm.root, bs, true);
+    for (auto* b : bs) {
+        RectF r = stageBounds(b);
+        double a = 1; for (DisplayObject* p = b; p; p = p->parent) a *= p->cx.am;
+        RectF h = hitStageBounds(b);
+        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f hit=%.0f,%.0f-%.0f,%.0f kids=%d\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1, h.x0, h.y0, h.x1, h.y1, (int)b->kids.size());
+    }
+}
 bool touchAnyButton() {
     std::vector<ButtonObj*> bs; collectButtons(vm.root, bs, true);
     for (auto* b : bs) if (b->enabled && !b->removed) return true;

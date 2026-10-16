@@ -1,4 +1,4 @@
-THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.2.0
+THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.3.0
 =================================================================================
 
 All three versions of the Flash game on Steam are supported: the original, Wrath of the
@@ -77,6 +77,10 @@ In menus and the pause screen:
                               (– also resumes from pause)
   Touch screen (handheld)     tap menu and pause buttons (like the mouse on PC); on
                               screens without buttons (cutscenes) a tap continues.
+Menus with the controller: the selected option is written in red; D-pad or left stick
+chooses another, A presses it, B goes back (on the pause screen: resumes the game).
+Rebinding: Options > "Controls" > REBIND CONTROLS lets you change which button does what
+(and which stick moves), and the touch joysticks' side and size. Saved in isaac.ini.
 Touch screen during play (handheld mode, as on Android):
   Finger on the left half     a joystick appears under it: move (how far you push it
                               sets your speed, see joystick_acceleration)

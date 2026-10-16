@@ -233,7 +233,18 @@ void main() {
     }
     vec3 rgb = c.rgb / max(c.a, 1e-6);
     rgb = clamp(rgb * vMul.rgb + vAdd.rgb, 0.0, 1.0);
-    float a = clamp(c.a * vMul.a + vAdd.a * c.a, 0.0, 1.0);
+    float aadd = vAdd.a, inkA = 0.0;
+    if (aadd > 9.0) {
+        // option selected with a controller: its dark ink turns one fixed red, the paper stays as it is.
+        // aadd = 10 + brightness of everything above the option (a screen fading to black darkens the red too).
+        // Some labels are written in translucent black: their ink is made (nearly) opaque so every red is the same
+        float fade = aadd - 10.0; aadd = 0.0;
+        float l = dot(rgb, vec3(0.299, 0.587, 0.114)) / max(fade, 0.02);
+        inkA = 1.0 - smoothstep(0.66, 0.85, l);
+        rgb = mix(rgb, vec3(0.55, 0.07, 0.07) * fade, inkA);
+    }
+    float a = clamp(c.a * vMul.a + aadd * c.a, 0.0, 1.0);
+    a = mix(a, min(1.0, a * 3.0), inkA);
     frag = vec4(rgb * a, a);
 }
 )";
@@ -568,7 +579,7 @@ static bool g_recStencil = false, g_recScissor = false;   // recorded state (not
 static SnapPtr g_prevSnap, g_curSnap;
 bool g_retireSnapshots = false;
 static std::mutex g_retireMu; static std::vector<SnapPtr> g_retired;
-struct NodeInterp { int32_t prev = -1; bool snap = true; };
+struct NodeInterp { int32_t prev = -1; bool snap = true, jumped = false; };
 static std::vector<NodeInterp> g_interp;
 static std::vector<double> g_wscale;
 
@@ -601,6 +612,7 @@ static void computeInterp() {
     size_t n = cur.nodes.size();
     g_interp.assign(n, NodeInterp());
     cur.jump.assign(n, 0.f);
+    cur.fresh.assign(n, 1);
     if (!g_prevSnap) return;
     Snapshot& prev = *g_prevSnap;
     g_wscale.resize(n);   // world scale of each node (at the current tick)
@@ -610,9 +622,14 @@ static void computeInterp() {
         g_wscale[i] = ps * maxScale(c.m);
         int pi = prev.findUid(c.uid);
         if (pi < 0) continue;
+        cur.fresh[i] = 0;
         const SnapNode& p = prev.nodes[pi];
         NodeInterp& ni = g_interp[i];
         ni.prev = pi;
+        // the parent teleported: show the whole subtree as it is now. (A new tear is created at (0,0) after the
+        // tick's movement code ran; the next tick moves it to Isaac's head and raises its graphic to the tear's
+        // height. Interpolating that child alone made the tear appear low and rise.)
+        if (c.parent >= 0 && g_interp[c.parent].jumped) { ni.jumped = true; continue; }
         bool snap = p.kind != c.kind || p.objKind != c.objKind || p.def != c.def || p.visible != c.visible || p.bmUid != c.bmUid;
         if (!snap && p.m.a == c.m.a && p.m.b == c.m.b && p.m.c == c.m.c && p.m.d == c.m.d && p.m.tx == c.m.tx && p.m.ty == c.m.ty) {
             ni.snap = false; continue;   // (most common case: it hasn't moved)
@@ -625,7 +642,11 @@ static void computeInterp() {
         // jumps: more than 250 stage px and much more than the previous tick's displacement
         double jump = std::hypot(c.m.tx - p.m.tx, c.m.ty - p.m.ty) * ps;
         double last = (size_t)pi < prev.jump.size() ? prev.jump[pi] : 0;
-        if (jump > 250 && jump > 2.5 * last + 40) snap = true;
+        if (jump > 250 && jump > 2.5 * last + 40) { snap = true; ni.jumped = true; }
+        // created during the last tick at the default (0,0) and only positioned now (attachMovie, then placed by
+        // the next tick's code): it never was at (0,0) on screen in a meaningful way, so don't slide from there
+        bool wasFresh = (size_t)pi < prev.fresh.size() && prev.fresh[pi];
+        if (wasFresh && p.m.tx == 0 && p.m.ty == 0 && (c.m.tx != 0 || c.m.ty != 0)) { snap = true; ni.jumped = true; }
         if (!snap) cur.jump[i] = (float)jump;
         ni.snap = snap;
     }
@@ -712,6 +733,8 @@ static void growR(RectF& r, bool& any, const Mat& m, double x0, double y0, doubl
 }
 
 static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskPass);
+static float g_inkFade = -1;             // >= 0 while compiling the subtree of the focused option (see kFS)
+static void inkMark(CX& cx) { if (g_inkFade >= 0) cx.aa = (10 + g_inkFade) * 255; }
 static uint32_t g_sceneTargetUid = 0;   // BitmapData whose texture is being drawn into (0 = the screen)
 static void compileChildren(uint32_t i, const Mat& m, const CX& cx, bool maskPass) {
     const std::vector<SnapNode>& N = g_curSnap->nodes;
@@ -749,6 +772,13 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     Mat m = parent * local;
     CX cx = maskPass ? CX() : pcx * (p ? lerpCX(p->cx, n.cx, (float)g_alpha) : n.cx);
     if (!maskPass && cx.am <= 0 && cx.aa <= 0) return;
+    // option selected with a controller (menuui.cpp): everything drawn inside it goes through the shader's "ink"
+    // mode (dark ink -> one fixed red). It is told how bright the parents leave it (for slightly tinted screens)
+    struct InkScope { float saved = g_inkFade; ~InkScope() { g_inkFade = saved; } } inkScope;
+    if (!maskPass && n.uid && n.uid == g_curSnap->focusUid && g_inkFade < 0) {
+        float fade = std::max(0.f, std::min(1.f, (pcx.rm + pcx.gm + pcx.bm) / 3 + (pcx.ra + pcx.ga + pcx.ba) / (3 * 255.f)));
+        if (fade > 0.97f) g_inkFade = fade;   // (once the screen starts fading to black the selection isn't shown)
+    }
     if (!maskPass && n.blur && g_renderCfg.filters && n.kind != SN_BITMAP) {
         size_t at = g_cmds.size();
         Cmd f; f.op = C_FILTER; f.node = i;
@@ -756,7 +786,7 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
         f.bx = (float)(n.blurX * sc); f.by = (float)(n.blurY * sc); f.passes = n.blurPasses;
         g_cmds.push_back(f);
         if (n.kind == SN_CONTAINER) compileChildren(i, m, cx, false);
-        else { Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio; g_cmds.push_back(c); }
+        else { Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx); c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio; g_cmds.push_back(c); }
         Cmd e; e.op = C_FILTER_END; g_cmds.push_back(e);
         // bounds (destination px) of everything drawn inside
         RectF r; bool any = false;
@@ -771,9 +801,9 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     }
     switch (n.kind) {
         case SN_CONTAINER: compileChildren(i, m, cx, maskPass); break;
-        case SN_BITMAP: { Cmd c; c.op = C_BITMAP; c.node = i; c.m = m; c.cx = cx; g_cmds.push_back(c); break; }
+        case SN_BITMAP: { Cmd c; c.op = C_BITMAP; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx); g_cmds.push_back(c); break; }
         case SN_CONTENT: {
-            Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx;
+            Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx);
             c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio;
             g_cmds.push_back(c); break;
         }
@@ -878,8 +908,10 @@ static std::unordered_map<uint64_t, bool> g_learnSeen;
 // (the scale enters by quarter-octave step: keys a few hundredths apart are the same texture and are learned once)
 static uint64_t preHash(const PreKey& p) { int16_t qb = (int16_t)std::ceil(p.q100 / 100.0 - 1e-6); return (uint64_t)p.id | (uint64_t)p.kind << 16 | (uint64_t)p.abs << 24 | (uint64_t)p.variant << 32 | (uint64_t)(uint16_t)qb << 48; }
 static double winQ(int winH) { return 4.0 * std::log2(std::max(1, winH) / 720.0); }
+extern uint16_t g_synthCharBase;
 static void learnKey(const SnapNode& n, const TexKey& k, double scale) {
     if (!n.def || n.objKind == OK_EDITTEXT) return;   // (editable texts change: not preloaded)
+    if (n.def->id >= g_synthCharBase) return;         // (shapes made at run time: menuui.cpp)
     PreKey p; p.id = n.def->id; p.kind = n.objKind; p.abs = g_sceneTargetUid != 0; p.variant = (uint16_t)k.variant;
     double q = 4.0 * std::log2(std::max(1.0 / 64, std::min(64.0, scale)));   // (unrounded: the exact scale)
     p.q100 = (int16_t)std::lround((p.abs ? q : q - winQ(g_winH)) * 100);

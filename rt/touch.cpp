@@ -6,6 +6,8 @@
 namespace fl {
 
 static const double kMinHold = 0.09;
+static bool g_swap = false, g_follow = false; static double g_sizeK = 0.12;
+void TouchControls::setLayout(bool swapSides, int size, int type) { g_swap = swapSides; g_sizeK = size <= 0 ? 0.09 : size >= 2 ? 0.15 : 0.12; g_follow = type == 1; }
 static const double kDead = 0.18;      // dead zone (fraction of the radius)   // s: a quick tap must still be seen by the game's per-tick key polling (30 Hz)
 
 bool TouchControls::toStage(const TouchCtx& c, double px, double py, double& sx, double& sy) {
@@ -23,13 +25,18 @@ void TouchControls::press(int code, bool down) {
 // joystick direction -> keys. Movement: 8 directions (WASD). Shooting: 4 directions (the game shoots along one
 // axis; the dominant one wins, with some hysteresis so it doesn't flicker on the diagonal).
 void TouchControls::steer(Stick& s, int which, double px, double py) {
+    s.fx = px; s.fy = py;
     double dx = px - s.cx, dy = py - s.cy, d = std::hypot(dx, dy);
-    // the base stays where the finger first landed; the knob stops at its edge
+    if (g_follow && d > s.r) {   // joystick type 2: the base follows the finger (it never gets further than the edge)
+        s.cx = px - dx / d * s.r; s.cy = py - dy / d * s.r;
+        dx = px - s.cx; dy = py - s.cy; d = s.r;
+    }
+    // type 1: the base stays where the finger first landed; the knob stops at its edge
     double kd = std::min(d, s.r), k = d > 0 ? kd / d : 0;
     s.kx = s.cx + dx * k; s.ky = s.cy + dy * k;
     int want[4] = {0, 0, 0, 0};   // left, up, right, down
     s.mag = (float)(kd / s.r);
-    if (d > s.r * kDead) {
+    if (d > s.r * kDead && lastPlay_) {   // (outside gameplay a held stick is only tracked, see update)
         double ux = dx / d, uy = dy / d;
         if (which == 0) {
             const double t = 0.383;   // sin 22.5 deg: 8 sectors
@@ -49,22 +56,36 @@ void TouchControls::steer(Stick& s, int which, double px, double py) {
 void TouchControls::down(int64_t id, double px, double py, const TouchCtx& c, double now) {
     double sx, sy; if (!toStage(c, px, py, sx, sy)) return;
     if (c.gameplay) {
-        // HUD icons first
+        // HUD icons first. Tested in window pixels: on a wide phone the bomb row is only ~2 mm tall, so every
+        // target is grown to a minimum finger-sized square (13% of the screen height) around its center; where
+        // grown targets overlap, the nearest center wins.
         static const int kCodes[4] = {'E', 32, 'Q', 'P'};
+        const double minSz = std::min(c.winW, c.winH) * 0.13;
+        int best = -1; double bestD = 1e30;
         for (int i = 0; i < 4; i++) {
             if (!(c.mask & (1 << i))) continue;
             const float* r = c.rects[i];
-            float m = i == 3 ? (r[2] - r[0]) * 0.4f : 0;   // (the pause button is small: a more forgiving touch area)
-            if (sx >= r[0] - m && sx <= r[2] + m && sy >= r[1] - m && sy <= r[3] + m) {
-                for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[i]; h.since = now; h.up = false; press(h.code, true); return; }
-                return;
-            }
+            double x0, y0, x1, y1;
+            c.stageToWin.apply(r[0], r[1], x0, y0); c.stageToWin.apply(r[2], r[3], x1, y1);
+            if (x0 > x1) std::swap(x0, x1);
+            if (y0 > y1) std::swap(y0, y1);
+            double mx = i == 3 ? (x1 - x0) * 0.4 : 0;   // (the pause button is small: a more forgiving touch area)
+            x0 -= mx; x1 += mx; y0 -= mx; y1 += mx;
+            double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+            double hw = std::max((x1 - x0) / 2, minSz / 2), hh = std::max((y1 - y0) / 2, minSz / 2);
+            if (std::fabs(px - cx) > hw || std::fabs(py - cy) > hh) continue;
+            double d = std::hypot((px - cx) / hw, (py - cy) / hh);
+            if (d < bestD) { bestD = d; best = i; }
         }
-        int which = px < c.winW * 0.5 ? 0 : 1;
+        if (best >= 0) {
+            for (auto& h : hold_) if (h.id == -1 && !h.code) { h.id = id; h.code = kCodes[best]; h.since = now; h.up = false; press(h.code, true); return; }
+            return;
+        }
+        int which = (px < c.winW * 0.5) != g_swap ? 0 : 1;   // 0 = movement stick
         Stick& s = st_[which];
         if (s.id != -1) return;   // that side already has a finger
         s.id = id; s.cx = s.kx = px; s.cy = s.ky = py;
-        s.r = std::max(48.0, std::min(260.0, std::min(c.winW, c.winH) * 0.12));   // (size of the first Android build)
+        s.r = std::max(40.0, std::min(330.0, std::min(c.winW, c.winH) * g_sizeK));   // (normal = the first Android build's size)
         steer(s, which, px, py);
         return;
     }
@@ -111,7 +132,15 @@ void TouchControls::releaseAll(double now) {
 }
 
 void TouchControls::update(const TouchCtx& c, double now) {
-    if (c.gameplay != lastPlay_) { releaseAll(now); lastPlay_ = c.gameplay; }   // (pause, death, room transition to a menu...)
+    if (c.gameplay != lastPlay_) {
+        // pause, boss "VS" screen, death...: the HUD buttons and the menu finger are let go; a finger still on a
+        // joystick keeps it - its keys are released and pressed again when play resumes (before, the joystick
+        // vanished and Isaac stood still after the boss intro until the finger was lifted and put down again)
+        lastPlay_ = c.gameplay;
+        for (int w = 0; w < 2; w++) if (st_[w].id != -1) steer(st_[w], w, st_[w].fx, st_[w].fy);
+        for (auto& h : hold_) if (h.code) { press(h.code, false); h = Hold(); }
+        menuId_ = -1;
+    }
     for (auto& h : hold_) if (h.code && h.up && now - h.since >= kMinHold) { press(h.code, false); h = Hold(); }
 }
 

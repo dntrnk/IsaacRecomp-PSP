@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Isaac save converter</title>
+<!--
+  Save converter between the original Flash game (so.sol) and IsaacRecomp (isaac*_save.sol), all three versions.
+  Based on the converter by g333nza (https://github.com/whylurking/IsaacRecomp/issues/6), extended to the
+  original game and Wrath of the Lamb, both directions, and every field of the save.
+  Works offline: open this file in any browser. Nothing is uploaded anywhere.
+-->
+<style>
+  :root {
+    --paper: #e2dbcf;
+    --paper-2: #ebe5db;
+    --ink: #4a4744;
+    --ink-soft: #66625d;
+    --flesh: #c99694;
+    --blood: #8c2a2a;
+    --black: #0c0c0c;
+    --pin: #9a9a9a;
+    --ok: #3d6b3a;
+    --head: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive;
+    --body: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    background: var(--paper);
+    color: var(--ink);
+    font: 18px/1.45 var(--body);
+    overflow-x: hidden;
+    position: relative;
+  }
+  /* Isaac's face peeking in from the corner, like the in-game menu */
+  .face {
+    position: fixed; left: -190px; bottom: -190px; width: 380px; height: 380px;
+    border-radius: 50%; background: var(--flesh); border: 26px solid var(--black);
+    pointer-events: none; z-index: 0;
+  }
+  main { position: relative; z-index: 1; max-width: 1040px; margin: 0 auto; padding: 36px 16px 80px; }
+  h1 { font: bold 46px/1.05 var(--head); margin: 0 0 8px; color: var(--ink); }
+  .lede { margin: 0 0 30px; color: var(--ink-soft); max-width: 62ch; }
+  .notes { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; align-items: start; }
+  @media (max-width: 800px) { .notes { grid-template-columns: 1fr; } h1 { font-size: 36px; } }
+
+  .note {
+    position: relative; background: var(--paper-2); padding: 34px 24px 24px;
+    box-shadow: 0 10px 18px -10px rgba(0,0,0,.35), 0 1px 0 rgba(0,0,0,.08);
+  }
+  .note:nth-child(1) { transform: rotate(-.8deg); }
+  .note:nth-child(2) { transform: rotate(.7deg); background: #e8e0d3; }
+  @media (max-width: 800px) { .note:nth-child(n) { transform: none; } }
+  .note::before { /* pin */
+    content: ""; position: absolute; top: 10px; left: 50%; width: 18px; height: 18px; margin-left: -9px;
+    border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff, var(--pin) 55%, #6d6d6d);
+    box-shadow: 2px 4px 5px rgba(0,0,0,.3);
+  }
+  h2 { font: bold 27px/1.15 var(--head); margin: 0 0 6px; }
+  .note p { margin: 0 0 14px; color: var(--ink-soft); }
+  label.ver { display: block; margin: 0 0 14px; color: var(--ink-soft); }
+  select {
+    font: inherit; color: var(--ink); background: #f3eee6; border: 2px solid #8d8780; border-radius: 4px;
+    padding: 4px 8px; margin-left: 6px; max-width: 100%;
+  }
+
+  .drop {
+    display: block; width: 100%; border: 3px dashed #8d8780; background: transparent; color: var(--ink);
+    font: inherit; padding: 24px 14px; text-align: center; cursor: pointer; border-radius: 6px;
+  }
+  .drop:hover, .drop.over { background: rgba(201,150,148,.28); border-color: var(--blood); }
+  .drop:focus-visible, .btn:focus-visible, select:focus-visible { outline: 3px solid var(--blood); outline-offset: 3px; }
+  .drop strong { display: block; font: bold 22px/1.2 var(--head); margin-bottom: 4px; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  .result { margin-top: 18px; }
+  .result[hidden] { display: none; }
+  .msg { padding: 10px 12px; border-left: 6px solid var(--blood); background: rgba(140,42,42,.1); color: #5e1c1c; }
+  .done { border-left: 6px solid var(--ok); background: rgba(61,107,58,.12); color: #2c4d2a; padding: 10px 12px; margin-bottom: 12px; }
+  dl { margin: 0 0 14px; display: grid; grid-template-columns: auto 1fr; gap: 2px 18px; }
+  dt { color: var(--ink-soft); }
+  dd { margin: 0; font-size: 21px; line-height: 1.25; }
+  .btn {
+    display: inline-block; font: bold 21px/1 var(--head); text-decoration: none; cursor: pointer; border: 0;
+    background: var(--black); color: var(--paper-2); padding: 12px 20px 10px; border-radius: 4px;
+  }
+  .btn:hover { background: var(--blood); }
+  .fine { font-size: 16px; color: var(--ink-soft); margin: 12px 0 0; }
+  code { font: 15px/1.3 ui-monospace, Consolas, monospace; background: rgba(0,0,0,.06); padding: 1px 4px; border-radius: 3px; word-break: break-all; }
+  footer { margin-top: 44px; max-width: 76ch; color: var(--ink-soft); font-size: 17px; }
+  footer h3 { font: bold 22px/1.2 var(--head); color: var(--ink); margin: 22px 0 6px; }
+  footer p, footer li { margin: 0 0 8px; }
+  footer ul { padding-left: 22px; margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<div class="face" aria-hidden="true"></div>
+<main>
+  <h1>Isaac save converter</h1>
+  <p class="lede">Move your progress between the original Flash version of The Binding of Isaac and IsaacRecomp, in
+  either direction, for all three versions: the original game, Wrath of the Lamb and Eternal Edition. Everything runs
+  in your browser; your files never leave your computer.</p>
+
+  <div class="notes">
+    <section class="note" aria-labelledby="h-a">
+      <h2 id="h-a">Flash to IsaacRecomp</h2>
+      <p>Take the Flash game's <b>so.sol</b> and get the save file IsaacRecomp reads.</p>
+      <label class="ver">Version of the game:
+        <select id="ver" aria-label="Version of the game">
+          <option value="og">The Binding of Isaac (original)</option>
+          <option value="wotl" selected>Wrath of the Lamb</option>
+          <option value="eternal">Eternal Edition</option>
+        </select>
+      </label>
+      <button type="button" class="drop" data-mode="toRecomp">
+        <strong>Choose so.sol</strong>
+        or drop it here
+      </button>
+      <input type="file" accept=".sol" aria-label="Choose so.sol" data-mode="toRecomp">
+      <div class="result" hidden aria-live="polite"></div>
+    </section>
+
+    <section class="note" aria-labelledby="h-b">
+      <h2 id="h-b">IsaacRecomp to Flash</h2>
+      <p>Take <b>isaac_og_save.sol</b>, <b>isaac_save.sol</b> or <b>isaac_eternal_save.sol</b> and get a <b>so.sol</b>
+      for the original Flash game.</p>
+      <button type="button" class="drop" data-mode="toFlash">
+        <strong>Choose an IsaacRecomp save</strong>
+        or drop it here
+      </button>
+      <input type="file" accept=".sol" aria-label="Choose an IsaacRecomp save" data-mode="toFlash">
+      <div class="result" hidden aria-live="polite"></div>
+    </section>
+  </div>
+
+  <footer>
+    <h3>Before you start</h3>
+    <p>Close the game first (it rewrites its save when it exits) and keep a copy of the save you are about to replace.</p>
+    <h3>Where the files are</h3>
+    <p><b>IsaacRecomp</b>, one file per version (<code>isaac_og_save.sol</code> original,
+    <code>isaac_save.sol</code> Wrath of the Lamb, <code>isaac_eternal_save.sol</code> Eternal Edition):</p>
+    <ul>
+      <li>Windows: <code>%APPDATA%\IsaacRecomp\WrathOfTheLamb\</code></li>
+      <li>Linux: <code>~/.local/share/IsaacRecomp/WrathOfTheLamb/</code></li>
+      <li>Android: the <code>IsaacRecomp</code> folder in the internal storage</li>
+      <li>Nintendo Switch: <code>sd:/switch/isaac/</code></li>
+    </ul>
+    <p><b>Flash game (Steam)</b>: <code>so.sol</code> lives in Flash Player's shared objects folder, usually
+    <code>%APPDATA%\Macromedia\Flash Player\#SharedObjects\&lt;random name&gt;\localhost\so.sol</code>
+    (search that folder for <code>so.sol</code> if it isn't there).</p>
+    <h3>What carries over</h3>
+    <p>Stats, collected items, secrets and their unlock order, beaten bosses, completion marks, hard mode and the
+    lefty/AZERTY control options. Flash-only display settings (window size, resolution) are left out when going to
+    IsaacRecomp, and the Flash game picks its defaults for them when going back.</p>
+    <p class="fine">Based on the converter made by g333nza for the IsaacRecomp project.</p>
+  </footer>
+</main>
+
+<script>
+/* ===================== conversion core ===================== */
+(function (root) {
+  'use strict';
+  var enc = new TextEncoder(), dec = new TextDecoder();
+  var VERSIONS = {
+    og:      { name: 'The Binding of Isaac (original)', file: 'isaac_og_save.sol' },
+    wotl:    { name: 'Wrath of the Lamb',               file: 'isaac_save.sol' },
+    eternal: { name: 'Eternal Edition',                 file: 'isaac_eternal_save.sol' }
+  };
+  // Flash-only display settings: not meaningful to IsaacRecomp (it has its own window and resolution handling)
+  var FLASH_ONLY = { wind: 1, res: 1 };
+  // how the Flash game stores an empty slot in each array (the recompiled game leaves it undefined)
+  var FLASH_HOLE = { cols: 0, boss: 0, lcomp: 0, mwin: 0 };
+
+  function mkArr(length) { return { arr: true, length: length, items: new Map() }; }
+  function mkObj() { return { obj: true, keys: [], vals: new Map() }; }
+  function objSet(o, k, v) { if (!o.vals.has(k)) o.keys.push(k); o.vals.set(k, v); }
+
+  /* ---------- Flash LSO (AMF0) reader ---------- */
+  function readFlash(buf) {
+    if (buf.length < 20 || buf[0] !== 0 || buf[1] !== 0xbf ||
+        String.fromCharCode(buf[6], buf[7], buf[8], buf[9]) !== 'TCSO') {
+      throw new Error('This is not a Flash .sol file.');
+    }
+    var dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength), p = 16;
+    function need(n) { if (p + n > buf.length) throw new Error('The Flash file is cut short.'); }
+    function u16() { need(2); var v = dv.getUint16(p); p += 2; return v; }
+    function u32() { need(4); var v = dv.getUint32(p); p += 4; return v; }
+    function str() { var n = u16(); need(n); var s = dec.decode(buf.subarray(p, p + n)); p += n; return s; }
+    function lstr() { var n = u32(); need(n); var s = dec.decode(buf.subarray(p, p + n)); p += n; return s; }
+    function pairs(target, isArr) {                     // key/value pairs up to the 00 00 09 end marker
+      for (;;) {
+        var k = str();
+        if (k === '' && buf[p] === 9) { p++; return; }
+        var v = val();
+        if (isArr) { if (/^\d+$/.test(k)) target.items.set(Number(k), v); }
+        else objSet(target, k, v);
+      }
+    }
+    function val() {
+      need(1);
+      var t = buf[p++];
+      switch (t) {
+        case 0: need(8); var d = dv.getFloat64(p); p += 8; return d;
+        case 1: need(1); return buf[p++] !== 0;
+        case 2: return str();
+        case 3: var o = mkObj(); pairs(o, false); return o;
+        case 5: return null;
+        case 6: return undefined;
+        case 8: var a = mkArr(u32()); pairs(a, true); return a;
+        case 10: var n = u32(), s = mkArr(n); for (var i = 0; i < n; i++) { var x = val(); if (x !== undefined) s.items.set(i, x); } return s;
+        case 11: need(10); var dt = dv.getFloat64(p); p += 10; return dt;
+        case 12: return lstr();
+      }
+      throw new Error('Unsupported data type (' + t + ') in the Flash file.');
+    }
+    str(); p += 4;                      // shared object name + AMF version
+    var props = mkObj();
+    while (p < buf.length) { var key = str(); objSet(props, key, val()); p++; }
+    return props;
+  }
+
+  /* ---------- Flash LSO (AMF0) writer ---------- */
+  function writeFlash(s) {
+    var out = [];
+    function b(x) { out.push(x & 255); }
+    function u16(x) { b(x >> 8); b(x); }
+    function u32(x) { b(x >>> 24); b(x >>> 16); b(x >>> 8); b(x); }
+    function key(k) { var e = enc.encode(k); u16(e.length); e.forEach(b); }
+    function num(x) { var t = new Uint8Array(8); new DataView(t.buffer).setFloat64(0, x); b(0); t.forEach(b); }
+    function val(v) {
+      if (v === true || v === false) { b(1); b(v ? 1 : 0); }
+      else if (typeof v === 'number') num(v);
+      else if (typeof v === 'string') { var e = enc.encode(v); if (e.length > 65535) { b(12); u32(e.length); } else { b(2); u16(e.length); } e.forEach(b); }
+      else if (v === null) b(5);
+      else if (v === undefined) b(6);
+      else if (v.arr) { b(8); u32(v.length); v.entries.forEach(function (e) { key(String(e[0])); val(e[1]); }); u16(0); b(9); }
+      else if (v.obj) { b(3); v.keys.forEach(function (k) { key(k); val(v.vals.get(k)); }); u16(0); b(9); }
+      else b(6);
+    }
+    // arrays as the Flash game writes them: every slot, empty ones as 0 or undefined depending on the array
+    function flashArray(k, a) {
+      var r = { arr: true, length: a.length, entries: [] };
+      if (k === 'lockor') {                       // written newest first, like the original game
+        for (var i = a.length - 1; i >= 0; i--) if (a.items.has(i)) r.entries.push([i, a.items.get(i)]);
+      } else if (k === 'ulock') {                 // same insertion order as the original (follows lockor)
+        var seen = new Set(), lo = s.vals.get('lockor');
+        if (lo && lo.arr) for (var j = lo.length - 1; j >= 0; j--) {
+          var id = Number(lo.items.get(j));
+          if (lo.items.has(j) && a.items.has(id) && !seen.has(id)) { seen.add(id); r.entries.push([id, a.items.get(id)]); }
+        }
+        Array.from(a.items.keys()).sort(function (x, y) { return x - y; }).forEach(function (id) {
+          if (!seen.has(id)) r.entries.push([id, a.items.get(id)]);
+        });
+      } else {
+        var hole = FLASH_HOLE.hasOwnProperty(k) ? FLASH_HOLE[k] : undefined;
+        for (var n = 0; n < a.length; n++) {
+          var v = a.items.has(n) ? a.items.get(n) : undefined;
+          if (v === undefined || v === null || (hole === 0 && v === false)) v = hole;
+          if (v !== undefined && v !== null && typeof v === 'object') v = convertNested(v);
+          r.entries.push([n, v]);
+        }
+      }
+      return r;
+    }
+    function convertNested(v) {
+      if (v.arr) { var e = []; for (var i = 0; i < v.length; i++) e.push([i, v.items.has(i) ? v.items.get(i) : undefined]); return { arr: true, length: v.length, entries: e }; }
+      return v;
+    }
+
+    var body = [];
+    var save = out; out = body;
+    s.keys.forEach(function (k) {
+      var v = s.vals.get(k);
+      if (k === 'qqal') v = (v === 'MEDIUM' || v == null) ? 'AUTO' : v;
+      else if (v && v.arr) v = flashArray(k, v);
+      else if (v === undefined) v = undefined;
+      key(k); val(v); b(0);
+    });
+    // the Flash game restores some stats from a backup file (serial.txt) unless "cocks" is set
+    if (!s.vals.has('cocks')) { key('cocks'); val(true); b(0); }
+    out = save;
+
+    var head = [];
+    out = head;
+    'TCSO'.split('').forEach(function (c) { b(c.charCodeAt(0)); });
+    [0, 4, 0, 0, 0, 0].forEach(b);
+    u16(2); b(0x73); b(0x6f); u32(0);
+    out = save;
+    b(0); b(0xbf);
+    u32(head.length + body.length);
+    return Uint8Array.from(out.concat(head, body));
+  }
+
+  /* ---------- IsaacRecomp (ISAACSO1) reader ---------- */
+  // ISAACSO1 + a serialized value: n<number>; t f z(null) u(undefined) s<bytes>:<utf-8> a<count>:<values...>
+  // o<count>:<keylen>:<key><value>...
+  function readRecomp(buf) {
+    var magic = dec.decode(buf.subarray(0, 8));
+    if (magic !== 'ISAACSO1') throw new Error('This is not an IsaacRecomp save.');
+    var p = 8;
+    function int(term) {
+      var e = p; while (e < buf.length && buf[e] !== term) e++;
+      if (e >= buf.length) throw new Error('The IsaacRecomp save is cut short.');
+      var n = parseInt(dec.decode(buf.subarray(p, e)), 10); p = e + 1; return n;
+    }
+    function bytes(n) { if (p + n > buf.length) throw new Error('The IsaacRecomp save is cut short.'); var s = dec.decode(buf.subarray(p, p + n)); p += n; return s; }
+    function val(depth) {
+      if (depth > 40) throw new Error('The IsaacRecomp save is nested too deeply.');
+      var c = String.fromCharCode(buf[p++]);
+      switch (c) {
+        case 'u': return undefined;
+        case 'z': return null;
+        case 't': return true;
+        case 'f': return false;
+        case 'n': var e = p; while (e < buf.length && buf[e] !== 59) e++; var x = Number(dec.decode(buf.subarray(p, e))); p = e + 1; return x;
+        case 's': return bytes(int(58));
+        case 'a': var len = int(58), a = mkArr(len); for (var i = 0; i < len; i++) { var v = val(depth + 1); if (v !== undefined) a.items.set(i, v); } return a;
+        case 'o': var cnt = int(58), o = mkObj(); for (var j = 0; j < cnt; j++) { var k = bytes(int(58)); objSet(o, k, val(depth + 1)); } return o;
+      }
+      throw new Error('Unexpected data "' + c + '" in the IsaacRecomp save.');
+    }
+    var data = val(0);
+    if (!data || !data.obj) throw new Error('The IsaacRecomp save holds no data.');
+    return data;
+  }
+
+  /* ---------- IsaacRecomp (ISAACSO1) writer ---------- */
+  function writeRecomp(f) {
+    var parts = [];
+    function str(s) { var e = enc.encode(s); parts.push(e.length + ':'); parts.push(s); }
+    function ser(v, k) {
+      if (v === undefined) { parts.push('u'); return; }
+      if (v === null) { parts.push('z'); return; }
+      if (v === true) { parts.push('t'); return; }
+      if (v === false) { parts.push('f'); return; }
+      if (typeof v === 'number') { parts.push('n' + String(v) + ';'); return; }
+      if (typeof v === 'string') { parts.push('s'); str(v); return; }
+      if (v.arr) {
+        parts.push('a' + v.length + ':');
+        for (var i = 0; i < v.length; i++) {
+          var x = v.items.has(i) ? v.items.get(i) : undefined;
+          if ((k === 'cols' || k === 'boss') && x === 0) x = undefined;   // the recompiled game leaves these empty
+          ser(x, null);
+        }
+        return;
+      }
+      if (v.obj) { parts.push('o' + v.keys.length + ':'); v.keys.forEach(function (kk) { str(kk); ser(v.vals.get(kk), kk); }); return; }
+      parts.push('u');
+    }
+    var o = mkObj();
+    f.keys.forEach(function (k) {
+      if (FLASH_ONLY[k]) return;
+      var v = f.vals.get(k);
+      if (k === 'qqal') v = (v === 'AUTO' || v == null) ? 'MEDIUM' : v;
+      objSet(o, k, v);
+    });
+    ser(o, null);
+    return enc.encode('ISAACSO1' + parts.join(''));
+  }
+
+  function count(a, test) { var n = 0; if (a && a.arr) a.items.forEach(function (v) { if (test(v)) n++; }); return n; }
+  function summary(s) {
+    var g = function (k) { var v = s.vals.get(k); return typeof v === 'number' ? v : 0; };
+    var lock = s.vals.get('lock');
+    return {
+      deaths: g('deads'), momKills: g('wins'),
+      items: count(s.vals.get('cols'), function (v) { return v === true || (typeof v === 'number' && v > 0); }),
+      secrets: count(lock, function (v) { return v === true; }),
+      secretSlots: lock && lock.arr ? lock.length : 0,
+      bosses: count(s.vals.get('boss'), function (v) { return v === true; })
+    };
+  }
+
+  // Flash save -> most likely version (only Eternal Edition has 200 secret slots; the other two can't be told
+  // apart reliably, so the page lets the player choose)
+  function guessVersion(s) {
+    var lock = s.vals.get('lock');
+    if (lock && lock.arr && lock.length > 100) return 'eternal';
+    var cols = s.vals.get('cols');
+    if (cols && cols.arr && cols.length > 0 && cols.length <= 120) return 'og';
+    return null;
+  }
+  function versionFromName(name) {
+    var n = (name || '').toLowerCase();
+    if (n.indexOf('eternal') >= 0) return 'eternal';
+    if (n.indexOf('_og') >= 0 || n.indexOf('original') >= 0) return 'og';
+    if (n.indexOf('isaac_save') >= 0 || n.indexOf('wotl') >= 0) return 'wotl';
+    return null;
+  }
+
+  function detect(bytes) {
+    if (bytes.length > 9 && bytes[0] === 0 && bytes[1] === 0xbf) return 'flash';
+    if (bytes.length >= 8 && dec.decode(bytes.subarray(0, 8)) === 'ISAACSO1') return 'recomp';
+    return 'unknown';
+  }
+
+  root.IsaacConv = {
+    VERSIONS: VERSIONS,
+    readFlash: readFlash, readRecomp: readRecomp,
+    toRecomp: function (bytes) { var s = readFlash(bytes); return { data: writeRecomp(s), info: summary(s), guess: guessVersion(s) }; },
+    toFlash: function (bytes) { var s = readRecomp(bytes); return { data: writeFlash(s), info: summary(s) }; },
+    guessFlashVersion: function (bytes) { return guessVersion(readFlash(bytes)); },
+    versionFromName: versionFromName,
+    detect: detect
+  };
+  if (typeof module !== 'undefined') module.exports = root.IsaacConv;
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<script>
+/* ===================== interface ===================== */
+(function () {
+  if (typeof document === 'undefined') return;
+  var urls = {};
+  var verSel = document.getElementById('ver');
+  var verTouched = false;
+  verSel.addEventListener('change', function () { verTouched = true; });
+
+  document.querySelectorAll('.note').forEach(function (note) {
+    var btn = note.querySelector('.drop'), input = note.querySelector('input'),
+        box = note.querySelector('.result'), mode = btn.dataset.mode;
+
+    btn.addEventListener('click', function () { input.click(); });
+    input.addEventListener('change', function () { if (input.files[0]) handle(input.files[0]); input.value = ''; });
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      btn.addEventListener(ev, function (e) { e.preventDefault(); btn.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      btn.addEventListener(ev, function (e) { e.preventDefault(); btn.classList.remove('over'); });
+    });
+    btn.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); });
+
+    function fail(text) {
+      box.hidden = false; box.textContent = '';
+      var d = document.createElement('div'); d.className = 'msg'; d.textContent = text; box.appendChild(d);
+    }
+
+    function handle(file) {
+      file.arrayBuffer().then(function (ab) {
+        var bytes = new Uint8Array(ab), kind = IsaacConv.detect(bytes);
+        if (kind === 'unknown') return fail('“' + file.name + '” isn’t a recognised Isaac save file.');
+        if (mode === 'toRecomp' && kind !== 'flash') return fail('This looks like an IsaacRecomp save. Use “IsaacRecomp to Flash” instead.');
+        if (mode === 'toFlash' && kind !== 'recomp') return fail('This looks like a Flash save. Use “Flash to IsaacRecomp” instead.');
+        var res, outName, verName, ver;
+        try {
+          if (mode === 'toRecomp') {
+            res = IsaacConv.toRecomp(bytes);
+            if (res.guess && !verTouched) verSel.value = res.guess;
+            ver = verSel.value;
+            outName = IsaacConv.VERSIONS[ver].file; verName = IsaacConv.VERSIONS[ver].name;
+          } else {
+            res = IsaacConv.toFlash(bytes);
+            ver = IsaacConv.versionFromName(file.name);
+            outName = 'so.sol'; verName = ver ? IsaacConv.VERSIONS[ver].name : null;
+          }
+        } catch (err) { return fail('Couldn’t convert “' + file.name + '”: ' + err.message); }
+
+        if (urls[mode]) URL.revokeObjectURL(urls[mode]);
+        urls[mode] = URL.createObjectURL(new Blob([res.data], { type: 'application/octet-stream' }));
+
+        box.hidden = false; box.textContent = '';
+        var ok = document.createElement('div'); ok.className = 'done';
+        ok.textContent = 'Converted “' + file.name + '”' + (verName ? ' (' + verName + ').' : '.');
+        var dl = document.createElement('dl');
+        var rows = [['Deaths', res.info.deaths], ['Mom kills', res.info.momKills], ['Items found', res.info.items],
+                    ['Secrets', res.info.secrets + (res.info.secretSlots ? ' / ' + res.info.secretSlots + ' slots' : '')],
+                    ['Bosses beaten', res.info.bosses]];
+        rows.forEach(function (r) {
+          var dt = document.createElement('dt'), dd = document.createElement('dd');
+          dt.textContent = r[0]; dd.textContent = r[1]; dl.appendChild(dt); dl.appendChild(dd);
+        });
+        var a = document.createElement('a'); a.className = 'btn'; a.href = urls[mode]; a.download = outName;
+        a.textContent = 'Save ' + outName;
+        var fine = document.createElement('p'); fine.className = 'fine';
+        fine.textContent = mode === 'toRecomp'
+          ? 'Check that these numbers match what you expect, then put ' + outName + ' in the IsaacRecomp save folder (see below). Wrong version? Pick it above and drop the file again.'
+          : 'Check that these numbers match what you expect, then replace the Flash game’s so.sol with this file (see below).';
+        box.appendChild(ok); box.appendChild(dl); box.appendChild(a); box.appendChild(fine);
+        if (mode === 'toRecomp') {
+          // re-run with the chosen version if the player changes it afterwards
+          verSel.onchange = function () { verTouched = true; handle(file); };
+        }
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>

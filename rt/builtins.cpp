@@ -703,7 +703,7 @@ bool nativeGet(Object* o, Str* k, Value& out) {
 bool nativeSet(Object* o, Str* k, const Value& v) {
     if (o->kind == OK_TRANSFORM) {
         TransformObj* t = (TransformObj*)o; if (!t->target) return true;
-        if (k->s == "colorTransform" && v.isObj()) { t->target->cx = cxFromObj(v.o); t->target->scriptXform = true; return true; }
+        if (k->s == "colorTransform" && v.isObj()) { t->target->cx = cxFromObj(v.o); t->target->scriptColor = true; return true; }
         if (k->s == "matrix" && v.isObj()) { t->target->setMatrix(matFromObj(v)); t->target->scriptXform = true; return true; }
     }
     return false;

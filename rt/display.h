@@ -21,7 +21,7 @@ struct DisplayObject : Object {
     Mat m;                                  // local matrix (px)
     double sx = 1, sy = 1, rotX = 0, rotY = 0;   // cached decomposition (rotation in radians)
     CX cx;
-    bool visible = true, scriptXform = false, removed = false, placedByScript = false, timelinePlaced = false;
+    bool visible = true, scriptXform = false, scriptColor = false, removed = false, placedByScript = false, timelinePlaced = false;
     int clipDepth = 0;
     uint16_t ratio = 0;
     int placeFrame = 0;
@@ -60,6 +60,7 @@ struct ButtonObj final : DisplayObject {
 struct MovieClip final : DisplayObject {
     SpriteDef* def = nullptr;
     int cur = 0;                 // current frame (1-based; 0 = uninitialized)
+    uint32_t holdTick = 0;       // (patches.cpp, slowed enemies) _currentframe reads cur + 0.5 during this tick (+1)
     bool playing = true, initialized = false, inExec = false;
     std::vector<DisplayObject*> kids;          // sorted by depth
     std::unordered_map<Str*, DisplayObject*> byName;
@@ -158,6 +159,7 @@ bool hitTestPoint(DisplayObject* d, double gx, double gy, bool shapeFlag);
 Mat worldMatrix(DisplayObject* d);
 RectF localBounds(DisplayObject* d);   // in the object's parent space (includes its matrix)
 RectF stageBounds(DisplayObject* d);   // in stage coordinates
+RectF hitStageBounds(ButtonObj* b);   // its hit area, in stage coordinates
 bool touchButtonAt(double x, double y);   // (touch screens) a button under this stage point
 bool touchAnyButton();                    // (touch screens) any enabled, visible button on screen
 void keyEvent(int flashCode, int ascii, bool down);
@@ -178,6 +180,8 @@ int streamStart(StreamInfo* st, int frame0, Object* owner);
 void streamSync(int ch, StreamInfo* st, int frame0);
 bool chanAlive(int ch);
 void audioInit(bool device = true);   // false: test mode (mixed per tick)
+void audioDevicesChanged(double now);   // main thread: SDL_AUDIODEVICEADDED / REMOVED
+void audioDeviceTick(double now);
 void audioLock(); void audioUnlock();
 
 }  // namespace fl

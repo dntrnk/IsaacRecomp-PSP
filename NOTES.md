@@ -269,3 +269,94 @@
   `TouchControls` as Android (sticks, HUD taps, menus as mouse + tap = Space). The old Switch-only path
   (`switchTouch`: menus only) remains for `touch_controls = 0`. The pause button is drawn only in handheld mode
   (`appletGetOperationMode`). The .nro metadata (nacptool) carries the author and version 1.2.0.
+
+## v1.3 fixes
+- HUD hearts (>12): the game recolors every heart each tick with `colorit` (`new Transform(mc).colorTransform =`), then
+  `hud.lif.gotoAndStop(2|3)` for the 24/48-heart layout, whose PlaceObject moves/shrinks h0..h11. We flagged the
+  colorTransform setter as "transformed by script" (as Ruffle does), which froze h0..h2's matrix: big hearts on top of
+  the small ones. The original Flash Player re-lays them out, so `Transform.colorTransform` now only sets
+  `scriptColor` (blocks the timeline's color, not its matrix). Determinism runs unchanged.
+- Tears: `create()` attaches the ball at (0,0) after the tick's movement code (`actions1` runs before `playc`); the
+  next tick moves it to Isaac and sets `d._y = dy` (-23, the tear's height). The renderer snapped the parent's
+  teleport but interpolated the child `d` from 0 to -23: the tear appeared low and rose. Now a teleported node's
+  subtree snaps with it (`NodeInterp::jumped`), and a node created at (0,0) in the previous tick that then moves is
+  treated as a teleport (`Snapshot::fresh`).
+- Stuck shooting: SDL controllers shared one `padKeys` map between the left stick (WASD in game, arrows in menus),
+  the right stick, buttons and triggers, and the left stick only re-mapped when it moved. Holding it into the boss VS
+  screen turned WASD into an arrow that stayed pressed once the fight began. Now every source goes through
+  `keySrc(src, code, down)` (a key is down while any source holds it); the left stick and held D-pad directions are
+  re-mapped when gameplay/menu changes (also on Switch for D-pad/StickL buttons). Focus loss / background clears the
+  mask and the controller state. `ISAAC_TOUCH_INJECT` gained `axis <n> <value>` and `button <n> <0|1>`.
+- Android audio: SDL 2.30's `aaudio_PlayDevice` writes with a 1 ms timeout and drops the rest of the block. With the
+  low-latency buffer full most of the time, most of each 512-frame block was lost (the "motor" sound; screen
+  recording re-routes the stream to a path with other timing, which hid it). CMake now patches it to write the whole
+  block (50 ms timeout, up to 4 tries; blocking is what paces SDL's audio thread) and to grow the buffer by one burst
+  on each new underrun (Oboe-style latency tuning). If re-opening the stream after an output change failed, SDL's next
+  write used a NULL stream and crashed (the app restarted): it now waits and retries every second. The manifest also
+  handles more configuration changes itself (density, font scale, touchscreen, color mode).
+- Touch HUD targets: on a wide phone the bomb row is ~2 mm tall and a tap just above/below it spawned the movement
+  stick. Targets are now tested in window pixels, grown to at least 13% of the screen height around their center,
+  nearest center wins.
+
+## v1.3 features: controller menus, rebinding, save converter
+- Controller navigation (`rt/menuui.cpp`, logic thread). The game's menus are SWF buttons for the mouse. In menus /
+  the pause screen the main thread turns D-pad / left stick / A / B into InputEv type 5 (`NAV_*`, auto-repeat 0.38 s
+  then 0.11 s); `padNavEvent` keeps a focused button among the visible, enabled, on-stage ones of the topmost
+  `_root` child that has any (options sheet over the main menu, ...), moves it to the nearest button in the pressed
+  direction (distance along + 2.2 x sideways), hovers it with a mouse move (the game's own rollover art) and clicks it
+  with a synthetic mouse down/up at a point inside its hit shape. B: `_root.paus` on frame 2 (the pause screen) ->
+  P (resume), else Escape (the game's Back buttons have `keyPress "<Escape>"`). Screens without buttons get arrow /
+  Space / Escape pulses (3 ticks). The snapshot carries the uid of what turns red: the button, or for buttons that
+  are only an invisible hit area (the challenges `pauss.cN`, the collection's `col.iN`) the clip around them; their
+  rect is the hit area (`hitStageBounds`). The renderer marks every leaf of that subtree with alpha-add = (10 +
+  brightness of the parents) * 255, and the fragment shader's "ink" mode turns pixels darker than paper into one fixed
+  red, making translucent ink opaque (some labels are black at ~35% alpha) so every option has the same red. Once the
+  parents are darker than 0.97 (the game's `darky` fade to black is a colorTransform on `_root`) it isn't shown: the
+  old additive tint stayed red over the fade. Direction choice: candidates inside a 45-degree cone or on the same line
+  first (distance between facing edges + perpendicular gap), then anything ahead (within 2:1 for up/down; any for
+  left/right, e.g. Collection -> Exit Game). Default selection when a screen opens or the selected option disappears:
+  Start (first button of `_root.men.men`) when it is on screen; in the paper sheets (`pauss`, `hud.paus`) the topmost
+  option that isn't a Back button (key condition 19 = Escape); elsewhere the one nearest the last selection. While the
+  candidates' parents move (the main menu camera, sheets sliding in; capped at 45 ticks) nothing is shown or chosen.
+  The mouse over a button (or the rebinding rows) sets `Snapshot::handCursor` -> SDL hand cursor (PC only).
+- PC audio: the default output device at start-up is opened by name (`SDL_GetDefaultAudioInfo`), so a controller with
+  audio that becomes the system default (DualSense on Windows) doesn't take the sound. On SDL_AUDIODEVICEADDED/REMOVED
+  the default is re-checked after 0.5 and 2.5 s: the game moves to it if it isn't a controller ("controller",
+  "dualsense", "xbox"... in its name) or if its own device was lost. Android / Switch keep SDL's default device. Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
+  game switches between gameplay and a menu (re-evaluated every frame). Headless: `ISAAC_MENUUI=1` + `eval nav N`.
+- "REBIND CONTROLS" entry: `_root.paus` (pauss in menus, hud.paus in a run) frame 8 is "Control options" in the
+  three games (same layout); a synthesized text field is placed in it at script depth (local 64,186), removed on
+  other frames. Click/tap (`menuMouse`) or controller confirm -> `g_rebindRequests` -> snapshot -> main thread opens
+  the screen.
+- Synthesized characters: `rectShape` / `textField` build ShapeDef / EditTextDef at run time (ids from 0xfffe down,
+  cached by parameters) and `instantiate` them, so the rebinding screen is a normal part of the display list,
+  drawn in the game's HUD font (Upheaval, found by name) and scaled with `_root`. `g_synthCharBase` keeps them out of
+  the learned preload lists.
+- Rebinding screen: state on the main thread (`RebindScreen`, `rt/controls.cpp`), which publishes a `UiModel`; the
+  logic thread rebuilds `_root.__controls` when its version changes and returns the row rects (stage) for taps.
+  While it is open no input reaches the game. Capture takes the next key / controller button (triggers = 100/101);
+  assigning an input already used by another action swaps them. Closing saves isaac.ini.
+- Bindings: actions -> keys (SDL keycodes) / controller inputs (SDL GameController numbering everywhere; Switch
+  buttons mapped by position). A device that was never customized keeps the original behaviour exactly; once
+  customized, its inputs are translated in gameplay (and Pause in the pause screen) to the key the game reads for that
+  action given `so.data.frog` / `so.data.left` (`gameCode`), and original action keys that are no longer bound do
+  nothing in gameplay. Controller: `controller_move_stick` swaps stick roles. Touch: side and joystick size.
+- Save converter (`tools/save_converter.html`, shipped in the packages as `save_converter.html`): ISAACSO1 <-> Flash
+  LSO (AMF0). Keeps every field both ways except the Flash-only `wind`/`res` (not written to IsaacRecomp); writes
+  `cocks = true` to Flash saves (otherwise the Flash game restores stats from its serial.txt backup); empty cols/boss
+  slots become 0 in Flash and undefined in IsaacRecomp, like each game writes them. Tested both ways and round trips
+  on saves of the three versions.
+
+## v1.3 follow-ups
+- "Rebind controls" label: written with hand-drawn stroke glyphs (`rt/menuui_glyphs.inc`, original artwork; small
+  caps like the game's marker labels) as one synthesized line shape, cap height 26 at (74,155) in the options sheet.
+  The game's own menu labels are plain shapes (no font to reuse).
+- The Hourglass: slowed enemies advance their animation only on even ticks (`trgnextd` skips `nextFrame` when
+  `trg.free && slow > 0 && !fra2`), while attacks fire on `trg.d.d._currentframe == N`, so each attack frame was seen
+  on two ticks. `trgnextd` is wrapped natively: on a held tick the clip gets `holdTick`, and `_currentframe` reads
+  N + 0.5 for the rest of that tick (equality and end-of-animation checks fail, range checks still pass).
+- Touch: a gameplay <-> menu switch no longer drops the joysticks; their keys are released and re-pressed from the
+  finger's last position when play resumes (`Stick::fx/fy`). Joystick type 2: the base is dragged so the finger is
+  never farther than the radius.
+- Touch taps: whether a tap may become Space is decided by the screen at finger-down (`tapOnButtons`): the tap's own
+  click could change the screen first (Credits button -> credits, which a Space skips).

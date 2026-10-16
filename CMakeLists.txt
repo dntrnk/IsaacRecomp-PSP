@@ -21,12 +21,13 @@ elseif(ANDROID)
   FetchContent_MakeAvailable(SDL2)
   # SDL 2.30's AAudio backend (Android): ask for the low-latency mode (SDL doesn't; Android then picks large buffers,
   # a noticeable sound delay), and make the stream's buffer hold at least two of SDL's blocks - in low-latency mode it
-  # can be smaller than one block, and SDL's blocking writes then underrun ("engine starting" noise on some tablets).
+  # can be smaller than one block.
   # Patched after configuring and before compiling; idempotent.
   set(_aa_funcs ${sdl2_SOURCE_DIR}/src/audio/aaudio/SDL_aaudiofuncs.h)
   set(_aa_src ${sdl2_SOURCE_DIR}/src/audio/aaudio/SDL_aaudio.c)
   file(READ ${_aa_funcs} _t)
-  foreach(_f AAudioStreamBuilder_setPerformanceMode AAudioStream_setBufferSizeInFrames AAudioStream_getBufferCapacityInFrames)
+  foreach(_f AAudioStreamBuilder_setPerformanceMode AAudioStream_setBufferSizeInFrames AAudioStream_getBufferCapacityInFrames
+             AAudioStream_getBufferSizeInFrames AAudioStream_getFramesPerBurst)
     string(REGEX REPLACE "SDL_PROC_UNUSED\\(([^,]+), ${_f}," "SDL_PROC(\\1, ${_f}," _t "${_t}")
   endforeach()
   file(WRITE ${_aa_funcs} "${_t}")
@@ -40,6 +41,63 @@ elseif(ANDROID)
       "    { int32_t want = 2 * (int32_t)this->spec.samples, cap = ctx.AAudioStream_getBufferCapacityInFrames(private->stream); if (cap > 0 && want > cap) want = cap; ctx.AAudioStream_setBufferSizeInFrames(private->stream, want); }\n    this->spec.freq = ctx.AAudioStream_getSampleRate(private->stream);" _t "${_t}")
     string(REPLACE "        /* We handle this better in SDL3"
       "        { int32_t want = 2 * (int32_t)device->spec.samples, cap = ctx.AAudioStream_getBufferCapacityInFrames(hidden->stream); if (cap > 0 && want > cap) want = cap; ctx.AAudioStream_setBufferSizeInFrames(hidden->stream, want); }\n        /* We handle this better in SDL3" _t "${_t}")
+    file(WRITE ${_aa_src} "${_t}")
+  endif()
+  # SDL's aaudio_PlayDevice writes each block with a 1 ms timeout and drops whatever didn't fit. With the low-latency
+  # buffer usually full, most of every block was thrown away: the choppy "engine trying to start" sound (it went
+  # away when screen recording re-routed the stream). Write the whole block (blocking is what paces SDL's audio
+  # thread) and, like Oboe's latency tuner, grow the buffer by one burst whenever the device reports an underrun.
+  # Also: when the audio output changes and SDL can't re-open the stream, its next write used a NULL stream (crash,
+  # the app restarted); now it waits and retries.
+  file(READ ${_aa_src} _t)
+  if(NOT _t MATCHES "IsaacRecomp: full writes")
+    string(REPLACE "#include \"SDL_loadso.h\"" "#include \"SDL_loadso.h\"\n#include \"SDL_timer.h\"" _t "${_t}")
+    string(REPLACE "    res = ctx.AAudioStream_write(private->stream, private->mixbuf, private->mixlen / private->frame_size, timeoutNanoseconds);"
+      "    /* IsaacRecomp: full writes */
+    if (!private->stream) {
+        /* re-opening the stream failed after the output changed (headphones, Bluetooth...): SDL would crash here on
+           the NULL stream. Keep the audio thread paced and try again every second. */
+        static Uint32 nextTry = 0;
+        if (SDL_TICKS_PASSED(SDL_GetTicks(), nextTry)) {
+            nextTry = SDL_GetTicks() + 1000;
+            if (RebuildAAudioStream(this) == 0) {
+                return;
+            }
+        }
+        SDL_Delay((this->spec.samples * 1000) / this->spec.freq);
+        return;
+    }
+    {
+        const int32_t total = private->mixlen / private->frame_size;
+        int32_t done = 0;
+        int tries = 0;
+        (void)timeoutNanoseconds;
+        res = 0;
+        while (done < total && tries++ < 4) {
+            res = ctx.AAudioStream_write(private->stream, private->mixbuf + done * private->frame_size, total - done, (int64_t)50 * 1000 * 1000);
+            if (res < 0) {
+                break;
+            }
+            done += res;
+        }
+        if (res >= 0) {
+            static int32_t prevXRuns = 0;
+            const int32_t xruns = ctx.AAudioStream_getXRunCount(private->stream);
+            if (xruns > prevXRuns) {
+                const int32_t burst = ctx.AAudioStream_getFramesPerBurst(private->stream);
+                const int32_t cur = ctx.AAudioStream_getBufferSizeInFrames(private->stream);
+                const int32_t cap = ctx.AAudioStream_getBufferCapacityInFrames(private->stream);
+                if (burst > 0 && cur > 0 && cur + burst <= cap) {
+                    ctx.AAudioStream_setBufferSizeInFrames(private->stream, cur + burst);
+                }
+            }
+            prevXRuns = xruns;
+            res = done;
+        }
+    }" _t "${_t}")
+    if(NOT _t MATCHES "IsaacRecomp: full writes")
+      message(FATAL_ERROR "SDL AAudio patch (full writes) did not apply: SDL_aaudio.c changed")
+    endif()
     file(WRITE ${_aa_src} "${_t}")
   endif()
 else()
@@ -64,7 +122,7 @@ target_include_directories(isaacgen PRIVATE rt)
 # the generated code is huge: -O1 keeps compile times reasonable
 target_compile_options(isaacgen PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-O1 -fno-strict-aliasing -w>)
 
-set(RT_SRC rt/core.cpp rt/display.cpp rt/builtins.cpp rt/swfload.cpp rt/raster.cpp rt/render.cpp rt/snapshot.cpp rt/patches.cpp rt/platform.cpp rt/audio.cpp rt/main.cpp rt/debug.cpp rt/touch.cpp)
+set(RT_SRC rt/core.cpp rt/display.cpp rt/builtins.cpp rt/swfload.cpp rt/raster.cpp rt/render.cpp rt/snapshot.cpp rt/patches.cpp rt/platform.cpp rt/audio.cpp rt/main.cpp rt/debug.cpp rt/touch.cpp rt/controls.cpp rt/menuui.cpp)
 if(ANDROID)
   add_library(isaac SHARED ${RT_SRC})
   set_target_properties(isaac PROPERTIES OUTPUT_NAME main)   # libmain.so: the name SDL's activity loads
@@ -84,7 +142,7 @@ elseif(NINTENDO_SWITCH)
   # .elf -> .nro (icon + hbmenu metadata)
   set(APP_TITLE "The Binding of Isaac")
   set(APP_AUTHOR "whylurking")
-  set(APP_VERSION "1.2.0")
+  set(APP_VERSION "1.3.0")
   add_custom_command(TARGET isaac POST_BUILD
     COMMAND ${DEVKITPRO}/tools/bin/nacptool --create "${APP_TITLE}" "${APP_AUTHOR}" "${APP_VERSION}" isaac.nacp
     COMMAND ${DEVKITPRO}/tools/bin/elf2nro $<TARGET_FILE:isaac> isaac.nro --icon=${CMAKE_SOURCE_DIR}/switch/icon.jpg --nacp=isaac.nacp
