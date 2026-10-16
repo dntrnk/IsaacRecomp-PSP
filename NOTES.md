@@ -306,10 +306,23 @@
   direction (distance along + 2.2 x sideways), hovers it with a mouse move (the game's own rollover art) and clicks it
   with a synthetic mouse down/up at a point inside its hit shape. B: `_root.paus` on frame 2 (the pause screen) ->
   P (resume), else Escape (the game's Back buttons have `keyPress "<Escape>"`). Screens without buttons get arrow /
-  Space / Escape pulses (3 ticks). The snapshot carries the focused object's uid; the renderer applies a color
-  transform to its subtree that keeps the menus' paper colour and turns their grey ink dark red (per channel linear
-  map). Direction choice: candidates inside a 45-degree cone or on the same line first (distance between facing
-  edges + perpendicular gap), then anything ahead within 2:1. Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
+  Space / Escape pulses (3 ticks). The snapshot carries the uid of what turns red: the button, or for buttons that
+  are only an invisible hit area (the challenges `pauss.cN`, the collection's `col.iN`) the clip around them; their
+  rect is the hit area (`hitStageBounds`). The renderer marks every leaf of that subtree with alpha-add = (10 +
+  brightness of the parents) * 255, and the fragment shader's "ink" mode turns pixels darker than paper into one fixed
+  red, making translucent ink opaque (some labels are black at ~35% alpha) so every option has the same red. Once the
+  parents are darker than 0.97 (the game's `darky` fade to black is a colorTransform on `_root`) it isn't shown: the
+  old additive tint stayed red over the fade. Direction choice: candidates inside a 45-degree cone or on the same line
+  first (distance between facing edges + perpendicular gap), then anything ahead (within 2:1 for up/down; any for
+  left/right, e.g. Collection -> Exit Game). Default selection when a screen opens or the selected option disappears:
+  Start (first button of `_root.men.men`) when it is on screen; in the paper sheets (`pauss`, `hud.paus`) the topmost
+  option that isn't a Back button (key condition 19 = Escape); elsewhere the one nearest the last selection. While the
+  candidates' parents move (the main menu camera, sheets sliding in; capped at 45 ticks) nothing is shown or chosen.
+  The mouse over a button (or the rebinding rows) sets `Snapshot::handCursor` -> SDL hand cursor (PC only).
+- PC audio: the default output device at start-up is opened by name (`SDL_GetDefaultAudioInfo`), so a controller with
+  audio that becomes the system default (DualSense on Windows) doesn't take the sound. On SDL_AUDIODEVICEADDED/REMOVED
+  the default is re-checked after 0.5 and 2.5 s: the game moves to it if it isn't a controller ("controller",
+  "dualsense", "xbox"... in its name) or if its own device was lost. Android / Switch keep SDL's default device. Mouse/touch/keyboard input sends NAV_OFF (outline hidden). Held directions change meaning when the
   game switches between gameplay and a menu (re-evaluated every frame). Headless: `ISAAC_MENUUI=1` + `eval nav N`.
 - "REBIND CONTROLS" entry: `_root.paus` (pauss in menus, hud.paus in a run) frame 8 is "Control options" in the
   three games (same layout); a synthesized text field is placed in it at script depth (local 64,186), removed on

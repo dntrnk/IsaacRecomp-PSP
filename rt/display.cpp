@@ -723,6 +723,8 @@ static void boundsInto(DisplayObject* d, const Mat& m, RectF& r) {
 }
 RectF localBounds(DisplayObject* d) { RectF r; boundsInto(d, d->m, r); return r; }
 RectF stageBounds(DisplayObject* d) { RectF r; boundsInto(d, worldMatrix(d), r); return r; }
+// a button's hit area in stage coordinates (for buttons that draw nothing themselves: invisible hit zones)
+RectF hitStageBounds(ButtonObj* b) { RectF r; Mat w = worldMatrix(b); for (auto* k : b->hitKids) boundsInto(k, w * k->m, r); return r; }
 
 // ============================================================ hitTest
 static bool pointInPolys(const std::vector<std::vector<float>>& polys, double x, double y) {
@@ -868,7 +870,8 @@ void debugListButtons() {   // (testing) eval buttons
     for (auto* b : bs) {
         RectF r = stageBounds(b);
         double a = 1; for (DisplayObject* p = b; p; p = p->parent) a *= p->cx.am;
-        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1);
+        RectF h = hitStageBounds(b);
+        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f hit=%.0f,%.0f-%.0f,%.0f kids=%d\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1, h.x0, h.y0, h.x1, h.y1, (int)b->kids.size());
     }
 }
 bool touchAnyButton() {

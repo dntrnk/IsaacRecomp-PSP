@@ -65,6 +65,7 @@ struct Snapshot {
     std::vector<uint32_t> freedBitmaps;
     uint32_t bgColor = 0xffffff;
     bool mouseHidden = false, quit = false;
+    bool handCursor = false;   // the mouse is over something clickable (menuui.cpp)
     bool inGame = false;          // a game is in progress (even if paused)
     bool gameplay = false;        // actively playing (not in menus or paused): decides the button mapping on Switch
     double logicMs = 0;           // how long this tick took (diagnostics)

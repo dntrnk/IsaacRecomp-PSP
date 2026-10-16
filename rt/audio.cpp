@@ -4,6 +4,9 @@
 #include <SDL.h>
 #include <functional>
 #include <algorithm>
+#include <mutex>
+#include <string>
+#include <cctype>
 #define DR_MP3_IMPLEMENTATION
 #define DR_MP3_NO_STDIO
 #include "../third_party/drmp3.h"
@@ -33,8 +36,9 @@ static Chan g_chans[48];
 static SDL_AudioDeviceID g_dev = 0;
 static int g_genCounter = 0;
 
-void audioLock() { if (g_dev) SDL_LockAudioDevice(g_dev); }
-void audioUnlock() { if (g_dev) SDL_UnlockAudioDevice(g_dev); }
+static std::recursive_mutex g_devMu;   // g_dev can be reopened by the main thread (output device changes)
+void audioLock() { g_devMu.lock(); if (g_dev) SDL_LockAudioDevice(g_dev); }
+void audioUnlock() { if (g_dev) SDL_UnlockAudioDevice(g_dev); g_devMu.unlock(); }
 
 static bool chanSeek(Chan& c, uint64_t frame) {
     if (!c.decOk) return false;
@@ -105,17 +109,65 @@ static void mix(void*, Uint8* stream, int len) {
     for (int i = 0; i < frames * 2; i++) out[i] = std::max(-1.f, std::min(1.f, out[i]));
 }
 
-void audioInit(bool device) {
-    if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
+// ---- output device
+// SDL normally follows the system's default output. On PC, plugging a controller with its own audio (DualSense,
+// DualShock 4, Xbox headset jack) can make it the default, and the sound "disappears" into the controller. So the
+// device that was the default when the game started is opened by name and kept; when it goes away, or the default
+// changes to something that isn't a controller (headphones plugged in...), the game moves to the new default.
+static std::string g_devName;   // "" = SDL's default device
+static double g_devCheckAt[2] = {-1, -1};
+static bool isControllerAudio(const std::string& n) {
+    std::string l; for (char ch : n) l += (char)tolower((unsigned char)ch);
+    for (const char* k : {"controller", "dualsense", "dualshock", "xbox", "gamepad", "joy-con"}) if (l.find(k) != std::string::npos) return true;
+    return false;
+}
+static std::string defaultOutputName() {
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    char* name = nullptr; SDL_AudioSpec spec{};
+    if (SDL_GetDefaultAudioInfo(&name, &spec, 0) == 0 && name) { std::string r = name; SDL_free(name); return r; }
+#endif
+    return std::string();
+}
+static bool openDevice(const std::string& name) {
     SDL_AudioSpec want{}, have{};
     // mix directly at the device's rate (one resampling step instead of ours + SDL's conversion)
     want.freq = kIsAndroid ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = kIsAndroid ? 512 : 1024; want.callback = mix;   // (Android: ~11 ms)
-    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!g_dev) { logf("audio: %s\n", SDL_GetError()); return; }
+    SDL_AudioDeviceID d = SDL_OpenAudioDevice(name.empty() ? nullptr : name.c_str(), 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    if (!d) { logf("audio: %s: %s\n", name.empty() ? "default device" : name.c_str(), SDL_GetError()); return false; }
     if (have.freq >= 8000 && have.freq <= 192000) g_rate = have.freq;
-    logf("audio: %s, %d Hz, %d channels, %d-sample buffer\n", SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.channels, have.samples);
+    g_dev = d; g_devName = name;
+    logf("audio: %s, %d Hz, %d channels, %d-sample buffer%s\n", SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.channels, have.samples,
+         name.empty() ? "" : " (fixed output device)");
     SDL_PauseAudioDevice(g_dev, 0);
+    return true;
+}
+void audioInit(bool device) {
+    if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
+    std::string def = (kIsAndroid || kIsSwitch) ? std::string() : defaultOutputName();
+    if (def.empty() || !openDevice(def)) openDevice(std::string());
     g_rootTracers.push_back([](Tracer& tr) { audioLock(); for (auto& c : g_chans) if (c.active) tr.mark(c.owner); audioUnlock(); });
+}
+// main thread: an audio device was added or removed (the system's default is checked a little later: it changes
+// asynchronously)
+void audioDevicesChanged(double now) {
+    if (kIsAndroid || kIsSwitch || g_devName.empty() || !g_dev) return;
+    g_devCheckAt[0] = now + 0.5; g_devCheckAt[1] = now + 2.5;
+}
+void audioDeviceTick(double now) {
+    for (double& at : g_devCheckAt) {
+        if (at < 0 || now < at) continue;
+        at = -1;
+        std::string def = defaultOutputName();
+        bool lost = SDL_GetAudioDeviceStatus(g_dev) == SDL_AUDIO_STOPPED;
+        bool moved = !def.empty() && def != g_devName && !isControllerAudio(def);
+        if (!lost && !moved) continue;
+        std::string want = moved ? def : std::string();
+        if (lost && !moved && !def.empty() && !isControllerAudio(def)) want = def;
+        logf("audio: output device %s, switching to %s\n", lost ? "lost" : "changed", want.empty() ? "the default" : want.c_str());
+        std::lock_guard<std::recursive_mutex> lk(g_devMu);
+        SDL_CloseAudioDevice(g_dev); g_dev = 0;
+        if (want.empty() || !openDevice(want)) openDevice(std::string());
+    }
 }
 
 static Chan* allocChan() {

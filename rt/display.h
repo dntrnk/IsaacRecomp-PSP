@@ -159,6 +159,7 @@ bool hitTestPoint(DisplayObject* d, double gx, double gy, bool shapeFlag);
 Mat worldMatrix(DisplayObject* d);
 RectF localBounds(DisplayObject* d);   // in the object's parent space (includes its matrix)
 RectF stageBounds(DisplayObject* d);   // in stage coordinates
+RectF hitStageBounds(ButtonObj* b);   // its hit area, in stage coordinates
 bool touchButtonAt(double x, double y);   // (touch screens) a button under this stage point
 bool touchAnyButton();                    // (touch screens) any enabled, visible button on screen
 void keyEvent(int flashCode, int ascii, bool down);
@@ -179,6 +180,8 @@ int streamStart(StreamInfo* st, int frame0, Object* owner);
 void streamSync(int ch, StreamInfo* st, int frame0);
 bool chanAlive(int ch);
 void audioInit(bool device = true);   // false: test mode (mixed per tick)
+void audioDevicesChanged(double now);   // main thread: SDL_AUDIODEVICEADDED / REMOVED
+void audioDeviceTick(double now);
 void audioLock(); void audioUnlock();
 
 }  // namespace fl

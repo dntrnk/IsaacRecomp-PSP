@@ -157,7 +157,7 @@ static void updateRebindLabel() {
     // the free line below them is at ~ 205 (above the gamepad doodle)
     // written in the same place and size as the other two labels: their capitals start at x ~ 73, the rows are
     // ~ 44 apart (Lefty Flip at y ~ 66, Azerty at ~ 110) and capitals are ~ 26 tall
-    g_rebindLabel = put(sheet, handwritten("Rebind Controls", 26, 0xff6a6662u), DEPTH_BIAS + 9000, 74, 155);
+    g_rebindLabel = put(sheet, handwritten("Rebind Controls", 26, 0xff878484u), DEPTH_BIAS + 9000, 74, 155);
     if (g_rebindLabel) g_rebindLabel->name = intern("__rebind");
 }
 static bool labelHit(double sx, double sy) {
@@ -223,10 +223,14 @@ static double g_lastFx = -1, g_lastFy = -1;
 struct Pulse { int code; uint32_t until; };
 static std::vector<Pulse> g_pulses;
 static bool g_uiOpen = false, g_inGame = false, g_gameplay = false;
-static bool g_focusShown = false; static RectF g_focusRect;
+static bool g_hand = false;
+static bool g_focusShown = false; static RectF g_focusRect; static DisplayObject* g_focusShow = nullptr;
 
-struct Cand { DisplayObject* d; RectF r; double cx, cy; };
+// d: what is selected (a button, or the "Rebind Controls" label); show: what turns red (the button itself, or the
+// clip around it when the button is only an invisible hit area: the challenges, the collection's items)
+struct Cand { DisplayObject* d; RectF r; double cx, cy; DisplayObject* show; };
 static DisplayObject* topLevel(DisplayObject* d) { while (d->parent && d->parent != vm.root) d = d->parent; return d; }
+static double area(const RectF& r) { return (r.x1 - r.x0) * (r.y1 - r.y0); }
 static std::vector<Cand> candidates() {
     std::vector<Cand> out;
     std::vector<ButtonObj*> bs; visibleButtons(bs);
@@ -236,14 +240,23 @@ static std::vector<Cand> candidates() {
         double a = 1; for (DisplayObject* p = b; p; p = p->parent) a *= p->cx.am;
         if (a < 0.05) continue;
         RectF r = stageBounds(b);
+        DisplayObject* show = b;
+        if (!r.valid() || r.x1 - r.x0 < 4 || r.y1 - r.y0 < 4) {   // draws nothing: its hit area, and the clip around it
+            r = hitStageBounds(b);
+            show = nullptr;
+            if (b->parent && b->parent != vm.root) {
+                RectF pr = stageBounds(b->parent);
+                if (pr.valid() && area(pr) < area(r) * 6) show = b->parent;
+            }
+        }
         if (!r.valid() || r.x1 - r.x0 < 4 || r.y1 - r.y0 < 4) continue;
         double cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
         if (cx < 0 || cy < 0 || cx > g_stageW || cy > g_stageH) continue;
-        all.push_back({b, r, cx, cy});
+        all.push_back({b, r, cx, cy, show});
     }
     if (g_rebindLabel && !g_rebindLabel->removed) {
         RectF r = stageBounds(g_rebindLabel);
-        if (r.valid()) all.push_back({g_rebindLabel, r, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2});
+        if (r.valid()) all.push_back({g_rebindLabel, r, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, g_rebindLabel});
     }
     if (all.empty()) return out;
     // only the topmost layer: the options sheet over the main menu, the pause sheet over the room...
@@ -265,19 +278,63 @@ static void hover(const Cand& c) {
     if (c.d->kind == OK_BUTTON) mouseEvent(c.cx, c.cy, 0);
     g_lastFx = c.cx; g_lastFy = c.cy;
 }
+static bool isBackButton(DisplayObject* d) {   // the sheets' "Back" buttons answer to Escape (key code 19)
+    if (d->kind != OK_BUTTON) return false;
+    for (auto& c : ((ButtonObj*)d)->def->conds) if ((c.cond >> 9) == 19) return true;
+    return false;
+}
+static bool named(DisplayObject* d, const char* n) { return d && d->name && d->name->s == n; }
+static DisplayObject* startButton() {   // the title menu's "Start": the first button of _root.men.men (the 3 games)
+    std::vector<ButtonObj*> bs; visibleButtons(bs);
+    for (ButtonObj* b : bs) {
+        DisplayObject* p = b->parent;
+        if (named(p, "men") && named(p->parent, "men") && p->parent->parent == vm.root) return b;
+    }
+    return nullptr;
+}
+// the option selected when a screen opens (or the selected one goes away)
+static const Cand* defaultFocus(const std::vector<Cand>& cs) {
+    const Cand* pick = nullptr;
+    if (DisplayObject* st = startButton())   // the main menu: always Start
+        for (auto& c : cs) if (c.d == st) return &c;
+    std::string top = topLevel(cs[0].d)->name ? topLevel(cs[0].d)->name->s : std::string();
+    if (top == "pauss" || top == "hud") {   // the paper sheets (pause, options, controls, challenges): the first option
+        for (auto& c : cs) {
+            if (isBackButton(c.d)) continue;
+            if (!pick || c.r.y0 < pick->r.y0 - 8 || (c.r.y0 < pick->r.y0 + 8 && c.r.x0 < pick->r.x0)) pick = &c;
+        }
+        if (pick) return pick;
+    }
+    if (g_lastFx >= 0) {   // elsewhere: the option nearest to where the selection was
+        double bd = 1e30;
+        for (auto& c : cs) { double d = std::hypot(c.cx - g_lastFx, c.cy - g_lastFy); if (d < bd) { bd = d; pick = &c; } }
+        return pick;
+    }
+    for (auto& c : cs) if (!pick || area(c.r) > area(pick->r)) pick = &c;
+    return pick;
+}
 static const Cand* ensureFocus(const std::vector<Cand>& cs) {
     if (cs.empty()) { g_focus = nullptr; return nullptr; }
     if (const Cand* f = findFocus(cs)) return f;
-    const Cand* pick = &cs[0];
-    if (g_lastFx >= 0) {   // the screen changed: the option nearest to where the outline was
-        double bd = 1e30;
-        for (auto& c : cs) { double d = std::hypot(c.cx - g_lastFx, c.cy - g_lastFy); if (d < bd) { bd = d; pick = &c; } }
-    } else {               // first time: the biggest option (Start, the pause sheet's Options...)
-        double ba = -1;
-        for (auto& c : cs) { double a = (c.r.x1 - c.r.x0) * (c.r.y1 - c.r.y0); if (a > ba) { ba = a; pick = &c; } }
-    }
+    const Cand* pick = defaultFocus(cs);
     g_focus = pick->d; hover(*pick);
     return pick;
+}
+// while the screen moves (the main menu's camera travelling to the collection, a sheet sliding in) nothing is
+// shown or chosen: what is selected afterwards is decided once it settles
+static uint64_t g_layoutSig = 0; static uint32_t g_movingSince = 0, g_stillSince = 0;
+static bool screenMoving(const std::vector<Cand>& cs) {
+    uint64_t h = 1469598103934665603ull;
+    for (auto& c : cs) {
+        DisplayObject* p = c.d->parent ? c.d->parent : c.d;
+        Mat w = worldMatrix(p);
+        int64_t v[2] = {(int64_t)std::lround(w.tx), (int64_t)std::lround(w.ty)};
+        for (int64_t x : v) { h ^= (uint64_t)x; h *= 1099511628211ull; }
+    }
+    uint32_t t = g_player.tick;
+    if (h != g_layoutSig) { g_layoutSig = h; if (t > g_stillSince + 1) g_movingSince = t; g_stillSince = t; }
+    bool moving = t < g_stillSince + 2;
+    return moving && t < g_movingSince + 45;   // (something that never stops moving doesn't hide it forever)
 }
 static void pulse(int code, int ascii) {
     keyEvent(code, ascii, true);
@@ -316,6 +373,7 @@ void padNavEvent(int code) {
         else if (code == NAV_BACK) goBack();
         return;
     }
+    if (screenMoving(cs)) return;   // (nothing to choose from until it settles)
     const Cand* f = findFocus(cs);
     bool fresh = !f;
     if (getenv("ISAAC_INPUT_LOG")) logf("[nav] event %d: %d candidates, focus %p %s\n", code, (int)cs.size(), (void*)g_focus, fresh ? "lost" : "kept");
@@ -345,7 +403,8 @@ void padNavEvent(int code) {
             if (along < 4) continue;
             double sg = sideGap(c);
             if (pass == 0 && sg > 0 && side > along) continue;   // outside the cone and not on the same line
-            if (pass == 1 && side > along * 2) continue;          // (never sideways)
+            if (pass == 1 && dy && side > along * 2) continue;    // (up/down never sideways; left/right reach the
+                                                                  //  options at the edge, e.g. Collection -> Exit)
             double s = std::max(0.0, gap(c)) + along * 0.25 + sg * 2.0;
             if (s < bs) { bs = s; best = &c; }
         }
@@ -355,7 +414,7 @@ void padNavEvent(int code) {
 // ============================================================ per tick
 void menuUiTick(bool gameplay, bool inGame) {
     static bool rooted = false;
-    if (!rooted) { rooted = true; gcAddRoot((GcObj**)&g_rebindLabel); gcAddRoot((GcObj**)&g_ui); gcAddRoot((GcObj**)&g_focus); }
+    if (!rooted) { rooted = true; gcAddRoot((GcObj**)&g_rebindLabel); gcAddRoot((GcObj**)&g_ui); gcAddRoot((GcObj**)&g_focus); gcAddRoot((GcObj**)&g_focusShow); }
     g_gameplay = gameplay; g_inGame = inGame;
     for (size_t i = 0; i < g_pulses.size();) {
         if (g_player.tick >= g_pulses[i].until) { keyEvent(g_pulses[i].code, 0, false); g_pulses.erase(g_pulses.begin() + i); }
@@ -365,23 +424,34 @@ void menuUiTick(bool gameplay, bool inGame) {
     { std::lock_guard<std::mutex> lk(g_uiMu); ver = g_uiVersion; if (ver != g_uiBuilt) m = g_uiModel; }
     if (ver != g_uiBuilt) { g_uiBuilt = ver; g_uiOpen = m.open; buildUi(m); }
     else if (g_ui && (g_ui->removed || !g_ui->parent)) { g_ui = nullptr; g_uiBuilt = -1; }   // (the game cleared _root: rebuild)
-    g_focusShown = false;
+    g_focusShown = false; g_focusShow = nullptr;
+    // the mouse over something clickable: the hand cursor (main.cpp)
+    g_hand = !gameplay && !g_uiOpen && (topButtonAt(g_player.mouseX, g_player.mouseY) || labelHit(g_player.mouseX, g_player.mouseY));
     if (gameplay && !g_uiOpen) { removeLabel(); return; }
     updateRebindLabel();
     if (!g_navOn || g_uiOpen) return;
     std::vector<Cand> cs = candidates();
+    if (screenMoving(cs)) return;
     const Cand* f = ensureFocus(cs);
     if (!f) return;
-    g_focusShown = true; g_focusRect = f->r;
+    g_focusShown = true; g_focusRect = f->r; g_focusShow = f->show;
 }
 
+void menuDebugFocus() {   // (testing) eval focus
+    std::vector<Cand> cs = candidates();
+    const Cand* f = findFocus(cs);
+    logf("[focus] %s show=%s rect=%.0f,%.0f-%.0f,%.0f shown=%d (%d options)\n", g_focus ? targetPath(g_focus)->s.c_str() : "-",
+         g_focusShow ? targetPath(g_focusShow)->s.c_str() : "-", f ? f->r.x0 : 0, f ? f->r.y0 : 0, f ? f->r.x1 : 0, f ? f->r.y1 : 0,
+         (int)g_focusShown, (int)cs.size());
+}
 void menuUiFill(Snapshot& s) {
     s.rebindRequests = g_rebindRequests;
     Value so = getMemK(Value((Object*)vm.root), intern("so"));
     Value data = so.isObj() ? getMemK(so, intern("data")) : VUNDEF;
     if (data.isObj()) { s.frog = truthy(getMemK(data, intern("frog"))); s.lefty = truthy(getMemK(data, intern("left"))); }
     s.focusOn = g_focusShown;
-    s.focusUid = g_focusShown && g_focus ? g_focus->uid : 0;
+    s.focusUid = g_focusShown && g_focusShow && !g_focusShow->removed ? g_focusShow->uid : 0;
+    s.handCursor = g_hand;
     if (!g_focusShown) return;
     double pad = g_stageH / 160.0;
     s.focusRect[0] = (float)(g_focusRect.x0 - pad); s.focusRect[1] = (float)(g_focusRect.y0 - pad);

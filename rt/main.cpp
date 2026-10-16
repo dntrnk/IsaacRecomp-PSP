@@ -759,6 +759,7 @@ int main(int argc, char** argv) {
             if (norender) continue;
             g_rstats = RenderStats();
             SnapPtr snap = buildSnapshot(); snap->time = g_player.tick * dt;
+            if (menuUi) menuUiFill(*snap);
             renderAdopt(snap);
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
             Uint64 rt0 = SDL_GetPerformanceCounter();
@@ -1166,6 +1167,7 @@ int main(int argc, char** argv) {
             touch.releaseAll(nowSec()); releaseAllKeys();
             wiz.open(avail, lastDevice, style);
         };
+        bool wizHand = false, snapHand = false, handShown = false;   // hand cursor (rebinding screen rows / game buttons)
         auto stagePoint = [&](double px, double py, double& sx, double& sy) {   // window pixels -> stage
             int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
             Mat inv; stageToWindowFor(dw, dh).invert(inv); inv.apply(px, py, sx, sy);
@@ -1263,6 +1265,7 @@ int main(int argc, char** argv) {
                         int ww, wh, dw, dh; SDL_GetWindowSize(win, &ww, &wh); SDL_GL_GetDrawableSize(win, &dw, &dh);
                         double px = mx * (double)dw / ww, py = my * (double)dh / wh;
                         double sx, sy; stagePoint(px, py, sx, sy);
+                        wizHand = uiHitRow(sx, sy) >= 0;
                         if (wiz.isOpen()) { if (e.type != SDL_MOUSEMOTION) wiz.pointer(uiHitRow(sx, sy), e.type == SDL_MOUSEBUTTONDOWN ? 1 : 2); break; }
                         pushIn({1, e.type == SDL_MOUSEMOTION ? 0 : e.type == SDL_MOUSEBUTTONDOWN ? 1 : 2, 0, false, sx, sy});
                         break;
@@ -1285,6 +1288,7 @@ int main(int argc, char** argv) {
                     }
 #endif
                     case SDL_CONTROLLERDEVICEADDED: SDL_GameControllerOpen(e.cdevice.which); break;
+                    case SDL_AUDIODEVICEADDED: case SDL_AUDIODEVICEREMOVED: if (!e.adevice.iscapture) audioDevicesChanged(nowSec()); break;
                     case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
                         // same scheme as on Switch: the key depends on whether we are playing, paused or in a menu.
                         // In menus and on the pause screen the D-pad, A and B drive the outline (menuui.cpp).
@@ -1481,6 +1485,18 @@ int main(int argc, char** argv) {
                 renderAdopt(sp); adopted++;
                 if (sp->quit) quitSeen = true;
                 SDL_ShowCursor(sp->mouseHidden ? SDL_DISABLE : SDL_ENABLE);
+                snapHand = sp->handCursor;
+            }
+            audioDeviceTick(nowSec());
+            {   // pointing at something clickable: the hand cursor, like the Flash player over a button
+                bool hand = wiz.isOpen() ? wizHand : snapHand;
+                if (hand != handShown && !kIsAndroid && !kIsSwitch) {
+                    static SDL_Cursor* curHand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
+                    static SDL_Cursor* curArrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
+                    SDL_Cursor* c = hand ? curHand : curArrow;
+                    if (c) SDL_SetCursor(c);
+                    handShown = hand;
+                }
             }
             if (quitSeen) running = false;
             const Snapshot* cur = renderCurrent();

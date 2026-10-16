@@ -60,6 +60,7 @@ void debugEval(const std::string& e) {
         else { bool av[DEV_COUNT] = {true, true, true}; w.open(av, DEV_KEYBOARD, 0); }
         return;
     }
+    if (e == "focus") { extern void menuDebugFocus(); menuDebugFocus(); return; }
     if (e == "buttons") { extern void debugListButtons(); debugListButtons(); return; }
     if (e.compare(0, 4, "set ") == 0) {
         size_t sp = e.find(' ', 4); std::string path = e.substr(4, sp - 4), val = e.substr(sp + 1);

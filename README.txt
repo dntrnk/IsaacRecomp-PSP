@@ -189,7 +189,13 @@ CHANGES IN VERSION 12 (v1.3.0 public release numbering, in progress)
 - Controllers in menus: the selected option is written in red (the game's own rollover
   art is shown too); the D-pad/left stick chooses the nearest option in that direction,
   A (cross) presses it and B (circle) goes back or closes the pause screen. Works in every
-  menu of the three games, on PC, Android and Switch.
+  menu of the three games, on PC, Android and Switch, including the challenges list and
+  the items of the collection. Each screen opens on its first option (Start in the main
+  menu, Options in the pause screen, Fullscreen in Options, Lefty Flip in Controls).
+- Mouse: the pointer becomes a hand over anything that can be clicked, as in the original.
+- PC: connecting a controller with its own audio (DualSense, DualShock 4, Xbox headset)
+  no longer takes the game's sound with it: the game keeps the output device it started
+  with, and follows the system when you switch to other speakers or headphones.
 - New: control rebinding (Options > Controls > REBIND CONTROLS) for keyboard,
   controller and touch screen, drawn inside the game. See CONTROLS.
 - New: save converter between the Flash game and this version, both directions, all

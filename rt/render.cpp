@@ -233,7 +233,18 @@ void main() {
     }
     vec3 rgb = c.rgb / max(c.a, 1e-6);
     rgb = clamp(rgb * vMul.rgb + vAdd.rgb, 0.0, 1.0);
-    float a = clamp(c.a * vMul.a + vAdd.a * c.a, 0.0, 1.0);
+    float aadd = vAdd.a, inkA = 0.0;
+    if (aadd > 9.0) {
+        // option selected with a controller: its dark ink turns one fixed red, the paper stays as it is.
+        // aadd = 10 + brightness of everything above the option (a screen fading to black darkens the red too).
+        // Some labels are written in translucent black: their ink is made (nearly) opaque so every red is the same
+        float fade = aadd - 10.0; aadd = 0.0;
+        float l = dot(rgb, vec3(0.299, 0.587, 0.114)) / max(fade, 0.02);
+        inkA = 1.0 - smoothstep(0.66, 0.85, l);
+        rgb = mix(rgb, vec3(0.55, 0.07, 0.07) * fade, inkA);
+    }
+    float a = clamp(c.a * vMul.a + aadd * c.a, 0.0, 1.0);
+    a = mix(a, min(1.0, a * 3.0), inkA);
     frag = vec4(rgb * a, a);
 }
 )";
@@ -722,6 +733,8 @@ static void growR(RectF& r, bool& any, const Mat& m, double x0, double y0, doubl
 }
 
 static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskPass);
+static float g_inkFade = -1;             // >= 0 while compiling the subtree of the focused option (see kFS)
+static void inkMark(CX& cx) { if (g_inkFade >= 0) cx.aa = (10 + g_inkFade) * 255; }
 static uint32_t g_sceneTargetUid = 0;   // BitmapData whose texture is being drawn into (0 = the screen)
 static void compileChildren(uint32_t i, const Mat& m, const CX& cx, bool maskPass) {
     const std::vector<SnapNode>& N = g_curSnap->nodes;
@@ -759,11 +772,12 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     Mat m = parent * local;
     CX cx = maskPass ? CX() : pcx * (p ? lerpCX(p->cx, n.cx, (float)g_alpha) : n.cx);
     if (!maskPass && cx.am <= 0 && cx.aa <= 0) return;
-    if (!maskPass && n.uid && n.uid == g_curSnap->focusUid) {
-        // option selected with a controller (menuui.cpp): its grey ink turns dark red, the paper stays as it is
-        // (per channel, a linear map that keeps the menus' paper colour and sends their ink to the target)
-        CX t; t.rm = 0.677f; t.ra = 0.286f * 255; t.gm = 1.364f; t.ga = -0.313f * 255; t.bm = 1.356f; t.ba = -0.288f * 255;
-        cx = t * cx;
+    // option selected with a controller (menuui.cpp): everything drawn inside it goes through the shader's "ink"
+    // mode (dark ink -> one fixed red). It is told how bright the parents leave it (for slightly tinted screens)
+    struct InkScope { float saved = g_inkFade; ~InkScope() { g_inkFade = saved; } } inkScope;
+    if (!maskPass && n.uid && n.uid == g_curSnap->focusUid && g_inkFade < 0) {
+        float fade = std::max(0.f, std::min(1.f, (pcx.rm + pcx.gm + pcx.bm) / 3 + (pcx.ra + pcx.ga + pcx.ba) / (3 * 255.f)));
+        if (fade > 0.97f) g_inkFade = fade;   // (once the screen starts fading to black the selection isn't shown)
     }
     if (!maskPass && n.blur && g_renderCfg.filters && n.kind != SN_BITMAP) {
         size_t at = g_cmds.size();
@@ -772,7 +786,7 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
         f.bx = (float)(n.blurX * sc); f.by = (float)(n.blurY * sc); f.passes = n.blurPasses;
         g_cmds.push_back(f);
         if (n.kind == SN_CONTAINER) compileChildren(i, m, cx, false);
-        else { Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio; g_cmds.push_back(c); }
+        else { Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx); c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio; g_cmds.push_back(c); }
         Cmd e; e.op = C_FILTER_END; g_cmds.push_back(e);
         // bounds (destination px) of everything drawn inside
         RectF r; bool any = false;
@@ -787,9 +801,9 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     }
     switch (n.kind) {
         case SN_CONTAINER: compileChildren(i, m, cx, maskPass); break;
-        case SN_BITMAP: { Cmd c; c.op = C_BITMAP; c.node = i; c.m = m; c.cx = cx; g_cmds.push_back(c); break; }
+        case SN_BITMAP: { Cmd c; c.op = C_BITMAP; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx); g_cmds.push_back(c); break; }
         case SN_CONTENT: {
-            Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx;
+            Cmd c; c.op = C_LEAF; c.node = i; c.m = m; c.cx = cx; inkMark(c.cx);
             c.ratio = p && n.objKind == OK_MORPH ? (uint16_t)std::max(0L, std::min(65535L, std::lround(lerpd(p->ratio, n.ratio, std::min(1.0, g_alpha))))) : n.ratio;
             g_cmds.push_back(c); break;
         }
