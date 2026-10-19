@@ -466,7 +466,22 @@ int main(int argc, char** argv) {
     logf("Isaac recomp (Android) - data folder %s\n", base.c_str());
 #else
     std::string base = SDL_GetBasePath() ? SDL_GetBasePath() : "./";
-    std::string pref; { char* p = SDL_GetPrefPath("IsaacRecomp", "WrathOfTheLamb"); if (p) { pref = p; SDL_free(p); } else pref = base; }
+    // saves (and the learned preload lists, screenshots, performance.txt) in a "saves" folder next to the program.
+    // Up to 1.3.0 they were in the user's profile (%APPDATA%\IsaacRecomp\WrathOfTheLamb, ~/.local/share/...): what
+    // is there is copied over the first time.
+    #ifdef _WIN32
+    std::string pref = base + "saves\\";
+#else
+    std::string pref = base + "saves/";
+#endif
+    if (!platformMkdir(pref.substr(0, pref.size() - 1))) {
+        char* p = SDL_GetPrefPath("IsaacRecomp", "WrathOfTheLamb"); pref = p ? p : base; if (p) SDL_free(p);   // (read-only folder)
+    } else if (char* p = SDL_GetPrefPath("IsaacRecomp", "WrathOfTheLamb")) {
+        std::string old = p; SDL_free(p);
+        for (const char* f : {"isaac_save.sol", "isaac_og_save.sol", "isaac_eternal_save.sol", "preload.txt", "preload_og.txt", "preload_eternal.txt"})
+            if (!platformFileExists(pref + f) && platformFileExists(old + f) && platformCopyFile(old + f, pref + f))
+                logf("%s copied from %s to the saves folder\n", f, old.c_str());
+    }
 #endif
     loadConfig(base + "isaac.ini", cfg);
     {   // control bindings (rebinding screen: Options > Controls > Rebind controls)
@@ -1645,10 +1660,10 @@ int main(int argc, char** argv) {
 #elif defined(__ANDROID__)
         javaVoid("restartApp", gameTag.c_str());   // (relaunches the activity with --game <tag>)
 #elif defined(_WIN32)
-        char exe[MAX_PATH]; GetModuleFileNameA(nullptr, exe, MAX_PATH);
-        STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-        std::string cl = std::string(GetCommandLineA()) + " --game " + gameTag;
-        if (CreateProcessA(exe, &cl[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+        wchar_t exe[32768]; GetModuleFileNameW(nullptr, exe, 32768);   // (wide: the folder may have any characters)
+        STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+        std::wstring cl = std::wstring(GetCommandLineW()) + L" --game " + std::wstring(gameTag.begin(), gameTag.end());
+        if (CreateProcessW(exe, &cl[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
 #else
         std::vector<char*> av(argv, argv + argc); std::string gt = gameTag; av.push_back((char*)"--game"); av.push_back(&gt[0]); av.push_back(nullptr);
         execv("/proc/self/exe", av.data());

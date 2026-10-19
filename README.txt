@@ -73,7 +73,7 @@ the active item, Q for card/pill, P or Esc to pause.
 Controller (XInput / SDL): left stick or D-pad = move; right stick or A/B/X/Y = shoot;
 LB or left trigger = bomb; RB or right trigger = active item; right stick click = card/
 pill (Q); Start, Back or left stick click = pause. In menus and in the pause screen the
-selected option is written in red: D-pad or left stick = choose, A (cross on PlayStation
+selected option is highlighted in pink: D-pad or left stick = choose, A (cross on PlayStation
 controllers) = press it, B (circle) = go back / close the pause screen, Start = Enter.
 REBINDING: Options > "Controls" > REBIND CONTROLS (also from the pause screen's Options)
 opens a screen to change the controls of the device you are using - keyboard, controller
@@ -174,18 +174,43 @@ fastest); 0 = automatic.
 SAVE DATA
 ---------
 The game is saved when you quit (and whenever the game asks for it) in:
-  Windows: %APPDATA%\IsaacRecomp\WrathOfTheLamb\
-  Linux:   ~/.local/share/IsaacRecomp/WrathOfTheLamb/
+  Windows / Linux: the "saves" folder next to the program (next to "tools")
   Android: the IsaacRecomp folder in the internal storage
+  Switch:  sd:/switch/isaac/
 with one file per version: isaac_og_save.sol (original), isaac_save.sol (Wrath of the
 Lamb) and isaac_eternal_save.sol (Eternal Edition).
-The same folder also holds log.txt (program messages from the last session) and
-preload.txt / preload_og.txt / preload_eternal.txt (graphics learned on this machine;
-older precarga*.txt files are merged in automatically).
-Not compatible with Flash save data: unlocks start from scratch.
+Up to version 1.3.0 the PC versions saved in %APPDATA%\IsaacRecomp\WrathOfTheLamb\
+(Windows) or ~/.local/share/IsaacRecomp/WrathOfTheLamb/ (Linux): the first time 1.3.1
+starts, the saves found there are copied to the "saves" folder (the old ones are kept).
+The same folder also holds preload.txt / preload_og.txt / preload_eternal.txt
+(graphics learned on this machine), screenshots and performance.txt.
+Saves from the Flash game can be converted with tools/save_converter.html (see above).
 
-CHANGES IN VERSION 12 (v1.3.0 public release numbering, in progress)
---------------------------------------------------------------------
+CHANGES IN VERSION 13 (v1.3.1 public release numbering)
+--------------------------------------------------------
+- PC: saves now go in a "saves" folder next to the program. Older saves are copied there
+  automatically the first time. Folders whose names have accents, Cyrillic or other
+  non-English letters (Windows user names in other languages) no longer stop the game
+  from loading or writing its save.
+- Controllers in menus: the selected option is pastel pink again (the same tone
+  everywhere); only the main menu's Start keeps the deep red.
+- Controllers: moving through the collection's grid goes to the item next to the
+  selected one, as expected; the first item is selected when it opens.
+- Controllers: the "Are you sure you want me to die?" note (Exit Game, in the main menu
+  and in the pause screen) can be answered with the controller (No is selected first);
+  the options under it can no longer be selected.
+- Controllers: smoother menu movement. Each press goes to the next option in that
+  direction (Options: Fullscreen > Music > Controls; Controls: Back > Rebind Controls),
+  B / circle goes back one screen (Controls > Options > main menu) like the Back buttons,
+  and the selection no longer flickers or slides away while the screen moves (returning
+  to the main menu, Stats). The pause screen's collected items are not selectable.
+- PC: starting the game with a controller connected no longer sends the sound to the
+  controller (Windows makes it the default output): the speakers or headphones are used.
+- Touch (Android, Switch): tapping the bomb counter places a bomb in the original game
+  and Wrath of the Lamb too (it only worked in Eternal Edition).
+
+CHANGES IN VERSION 12 (v1.3.0 public release numbering)
+------------------------------------------------------
 - Controllers in menus: the selected option is written in red (the game's own rollover
   art is shown too); the D-pad/left stick chooses the nearest option in that direction,
   A (cross) presses it and B (circle) goes back or closes the pause screen. Works in every

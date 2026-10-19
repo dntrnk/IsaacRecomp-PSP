@@ -241,8 +241,8 @@ bool recompInGameplay(bool* inGame) {
 }
 // Touch screens: where the HUD shows the bomb counter, the active item and the pill/card (stage
 // coordinates, a little enlarged for fingers). Bit i of the result = target i is on screen. The three games share
-// the HUD layout: hud.cacher (coins / bombs / keys, one row each), hud.it ("SPACE" box) and hud.extra (only
-// visible while holding a pill or card).
+// the HUD layout: hud.cacher (coins / bombs / keys, one row each; Eternal only, the other two have the same icons
+// directly in hud), hud.it ("SPACE" box) and hud.extra (only visible while holding a pill or card).
 int recompTouchTargets(float out[4][4]) {
     Value hud = getMemK(Value((Object*)vm.root), intern("hud"));
     if (!hud.isObj() || !hud.o->isDisplay() || !((DisplayObject*)hud.o)->visible) return 0;
@@ -256,7 +256,19 @@ int recompTouchTargets(float out[4][4]) {
         return r.valid();
     };
     RectF r; double pad = g_stageW / 120.0;   // (~1% of the stage width)
-    if (rect("cacher", false, r)) {   // middle row; the count text sits to the right of the icon
+    bool cacher = rect("cacher", false, r);
+    if (!cacher) {   // the original and WotL have the same three icons loose in the HUD instead of in hud.cacher: the
+                     // area Eternal's cacher covers (HUD coordinates), so the bomb row is found the same way
+        Mat w = worldMatrix((DisplayObject*)hud.o);
+        double xs[2] = {249.8, 279.4}, ys[2] = {11.1, 66.3};
+        r = RectF();
+        for (double x : xs) for (double y : ys) {
+            double px, py; w.apply(x, y, px, py);
+            if (!cacher) { r.x0 = r.x1 = px; r.y0 = r.y1 = py; cacher = true; }
+            else { r.x0 = std::min(r.x0, px); r.x1 = std::max(r.x1, px); r.y0 = std::min(r.y0, py); r.y1 = std::max(r.y1, py); }
+        }
+    }
+    if (cacher) {   // middle row; the count text sits to the right of the icon
         double h = (r.y1 - r.y0) / 3, w = r.x1 - r.x0;
         out[0][0] = (float)(r.x0 - pad); out[0][1] = (float)(r.y0 + h - pad * 0.3);
         out[0][2] = (float)(r.x0 + w * 2.8 + pad); out[0][3] = (float)(r.y0 + 2 * h + pad * 0.3); mask |= 1;

@@ -103,7 +103,7 @@ at startup. Each version keeps its own save file.
 - **No pop-in**: graphics are prepared in the background while the opening cutscene plays.
 - **Smooth room transitions**, with no sudden jumps after a hiccup.
 - **Controller support** without external tools. Every menu works with the controller alone: the selected option is
-  written in red, A/✕ presses it and B/◯ goes back.
+  highlighted in pink, A/✕ presses it and B/◯ goes back.
 - **Control rebinding** inside the game (*Options → Controls → Rebind controls*) for keyboard, controller and touch.
 - **Analog movement**: with a stick, Isaac's speed follows how far you push it, like in *Rebirth* (it can be
   turned off).
@@ -175,7 +175,7 @@ a menu:
 | Screenshot           | `F12`                 | —                             | —                               |
 | Performance overlay  | `F3`                  | —                             | —                               |
 
-In menus, the selected option is **written in red**; the D-pad or left stick chooses another, the controller presses it with
+In menus, the selected option is **highlighted in pink**; the D-pad or left stick chooses another, the controller presses it with
 **A** (✕ on PlayStation controllers) and goes back with **B** (◯), which also closes the pause screen.
 
 **Rebinding:** *Options → Controls → Rebind controls* (from the main menu or the pause screen) changes the controls of
@@ -229,7 +229,7 @@ through Android's low-latency audio path. To choose the resolution yourself, set
 
 ## 🎮 Nintendo Switch (homebrew)
 
-The same native recomp, built as a homebrew application (`.nro`, version 1.3.0). It contains no code or assets from
+The same native recomp, built as a homebrew application (`.nro`, version 1.3.1). It contains no code or assets from
 Nintendo or from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
 
 **You need:**
@@ -300,13 +300,15 @@ and taps in menus. The pause button is only shown in handheld mode.
 
 | Platform | Folder                                        |
 |----------|-----------------------------------------------|
-| Windows  | `%APPDATA%\IsaacRecomp\WrathOfTheLamb\`       |
-| Linux    | `~/.local/share/IsaacRecomp/WrathOfTheLamb/`  |
+| Windows  | The `saves` folder next to `IsaacRecomp.exe`  |
+| Linux    | The `saves` folder next to `isaac`            |
 | Android  | The `IsaacRecomp` folder in the internal storage |
 | Switch   | `sd:/switch/isaac/`                           |
 
 There is one save file per version (`isaac_og_save.sol`, `isaac_save.sol`, `isaac_eternal_save.sol`), and the
 format is the same everywhere, so you can copy saves between PC, Android and Switch.
+Up to 1.3.0 the PC versions saved in `%APPDATA%\IsaacRecomp\WrathOfTheLamb\` (Windows) or
+`~/.local/share/IsaacRecomp/WrathOfTheLamb/` (Linux); 1.3.1 copies those saves to `saves` the first time it starts.
 
 ## ❓ FAQ
 

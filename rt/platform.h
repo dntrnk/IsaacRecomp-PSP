@@ -1,6 +1,7 @@
 // Per-platform settings (memory and cores). PC: Windows/Linux. Nintendo Switch: devkitA64 + libnx.
 #pragma once
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <functional>
 namespace fl {
@@ -54,4 +55,11 @@ void platformStopThreads();
 void platformAppendFileAsync(const std::string& path, const std::string& text);
 // application memory (MB used / total) for the log; -1 if unknown
 void platformMemInfo(int* usedMB, int* totalMB);
+// files with UTF-8 paths (on Windows the C library takes paths in the "ANSI" code page, so a folder with accents,
+// Cyrillic... in its name couldn't be opened): fopen, mkdir, atomic replace, exists, copy
+FILE* platformFopen(const std::string& path, const char* mode);
+bool platformMkdir(const std::string& path);
+bool platformReplaceFile(const std::string& from, const std::string& to);
+bool platformFileExists(const std::string& path);
+bool platformCopyFile(const std::string& from, const std::string& to);
 }
