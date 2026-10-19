@@ -134,6 +134,8 @@ target_link_libraries(isaac PRIVATE isaacgen plutovg)
 # on Windows it can't be named isaac.exe: Steam's Isaac.exe (with the game data) usually sits in the same folder
 if(WIN32)
   set_target_properties(isaac PROPERTIES OUTPUT_NAME IsaacRecomp)
+  enable_language(RC)
+  target_sources(isaac PRIVATE windows/isaac.rc)   # manifest: UTF-8 code page (paths with any characters)
 endif()
 if(ANDROID)
   target_link_libraries(isaac PRIVATE SDL2::SDL2 log android m)   # (OpenGL ES is loaded at run time through SDL)
@@ -142,7 +144,7 @@ elseif(NINTENDO_SWITCH)
   # .elf -> .nro (icon + hbmenu metadata)
   set(APP_TITLE "The Binding of Isaac")
   set(APP_AUTHOR "whylurking")
-  set(APP_VERSION "1.3.0")
+  set(APP_VERSION "1.3.1")
   add_custom_command(TARGET isaac POST_BUILD
     COMMAND ${DEVKITPRO}/tools/bin/nacptool --create "${APP_TITLE}" "${APP_AUTHOR}" "${APP_VERSION}" isaac.nacp
     COMMAND ${DEVKITPRO}/tools/bin/elf2nro $<TARGET_FILE:isaac> isaac.nro --icon=${CMAKE_SOURCE_DIR}/switch/icon.jpg --nacp=isaac.nacp

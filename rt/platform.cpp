@@ -1,5 +1,16 @@
 #include "platform.h"
 #include "core.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 #include <cerrno>
 #include <cstring>
 #include <exception>
@@ -235,5 +246,39 @@ void platformMemInfo(int* usedMB, int* totalMB) {
     if (R_SUCCEEDED(svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0))) *usedMB = (int)(used >> 20);
     if (R_SUCCEEDED(svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0))) *totalMB = (int)(total >> 20);
 #endif
+}
+
+// ---- files with UTF-8 paths
+#ifdef _WIN32
+static std::wstring wpath(const std::string& u) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n : 1, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, &w[0], n);
+    w.resize(wcslen(w.c_str()));
+    return w;
+}
+FILE* platformFopen(const std::string& path, const char* mode) { return _wfopen(wpath(path).c_str(), wpath(mode).c_str()); }
+bool platformMkdir(const std::string& path) { return CreateDirectoryW(wpath(path).c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS; }
+bool platformReplaceFile(const std::string& from, const std::string& to) {
+    return MoveFileExW(wpath(from).c_str(), wpath(to).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+#else
+FILE* platformFopen(const std::string& path, const char* mode) { return fopen(path.c_str(), mode); }
+bool platformMkdir(const std::string& path) { return mkdir(path.c_str(), 0777) == 0 || errno == EEXIST; }
+bool platformReplaceFile(const std::string& from, const std::string& to) {
+#ifdef __SWITCH__
+    remove(to.c_str());   // (the SD card's FAT driver doesn't replace on rename)
+#endif
+    return rename(from.c_str(), to.c_str()) == 0;
+}
+#endif
+bool platformFileExists(const std::string& path) { FILE* f = platformFopen(path, "rb"); if (f) fclose(f); return f != nullptr; }
+bool platformCopyFile(const std::string& from, const std::string& to) {
+    FILE* a = platformFopen(from, "rb"); if (!a) return false;
+    FILE* b = platformFopen(to, "wb"); if (!b) { fclose(a); return false; }
+    char buf[65536]; size_t n; bool ok = true;
+    while ((n = fread(buf, 1, sizeof buf, a)) > 0) if (fwrite(buf, 1, n, b) != n) { ok = false; break; }
+    fclose(a); if (fclose(b) != 0) ok = false;
+    return ok;
 }
 }

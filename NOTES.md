@@ -360,3 +360,37 @@
   never farther than the radius.
 - Touch taps: whether a tap may become Space is decided by the screen at finger-down (`tapOnButtons`): the tap's own
   click could change the screen first (Credits button -> credits, which a Space skips).
+
+## v1.3.1
+- Controller focus colour: the shader's ink mode has two targets, selected by the alpha-add marker: 10 + fade =
+  pastel pink (0.78, 0.53, 0.53), 20 + fade = deep red, used only for the main menu's Start (`Snapshot::focusStrong`).
+- Navigation: the "same line" test uses the middle half of each rect's perpendicular span. The collection's hit areas
+  (70 px, 53 px apart, grid tilted ~5 degrees) overlap their neighbours, so with full spans the item to the left
+  counted as "below" and moves went sideways. Score adds 0.3 x the centers' perpendicular offset. Collection opens on
+  `i0`.
+- Dialogs: a button whose hit area covers >= 80% of the stage (the exit note `men.ex`: "No" is everywhere outside the
+  note; also the sheets' Back buttons) restricts the candidates to the clip that contains it; otherwise the exit note
+  shared the `men` layer with the main menu and the selection stayed behind it.
+- PC saves: `<program folder>/saves/` (was SDL_GetPrefPath; the old files are copied once, never deleted; if the
+  folder can't be created, the old location is used). Windows file names are UTF-8 everywhere: the exe carries a
+  manifest with `activeCodePage = UTF-8` (`windows/isaac.rc`; Windows 10 1903+), and the save goes through
+  `platformFopen` / `platformReplaceFile` (`_wfopen`, `MoveFileExW`) so it works on older Windows too. The restart after
+  "Delete save" uses the wide APIs. Before, a user folder with non-ANSI characters made the save unreadable/unwritable.
+- Navigation scoring (replaces the above): sideways = distance from the current option's center to the other one's
+  span (0 if the center is in front of it); pass 0 needs sideways <= along (centers); score = facing-edge gap +
+  0.3 along + sideways + 0.2 center offset. Fixes Fullscreen -> Controls (skipping Music) and Back -> Lefty Flip
+  (skipping the wide Rebind label).
+- Not options: buttons without any action script (the pause's "Options" left under the in-game exit note on frame 6),
+  the pause screen's item icons (`hud.paus.iN`), and, when a full-screen-hit button exists, buttons the mouse can't
+  reach (`pointOn`: center or a 5x5 grid must hit the button itself).
+- B: on the pause screen itself P; else the dialog's full-screen button ("No"), else a visible Back button (key cond
+  19), clicked like the mouse; Escape only when there is none (Escape closed every sheet: Controls -> main menu).
+  Default in a dialog: its full-screen button.
+- While the screen moves, the current selection stays shown if it still exists; after a press that sets the screen
+  moving (`g_afterClick`, 3 ticks) nothing is shown until it settles (the old option used to slide away with the
+  camera and the new default appeared after it, which looked like flicker).
+- Character select "Random" (`rander`) only acts when more than one character is unlocked (original behaviour).
+- PC audio at start-up: if the default output is a controller, the best other output is opened (names with
+  speakers / headphones in several languages first; HDMI, digital and virtual outputs last).
+- Touch bomb target: `hud.cacher` exists only in Eternal; the original and WotL have the coin/bomb/key icons directly
+  in `hud` at the same place, so the target comes from the same HUD-local rect (249.8,11.1)-(279.4,66.3).

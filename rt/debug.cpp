@@ -60,6 +60,11 @@ void debugEval(const std::string& e) {
         else { bool av[DEV_COUNT] = {true, true, true}; w.open(av, DEV_KEYBOARD, 0); }
         return;
     }
+    if (e == "touchtargets") {   // (testing) the HUD's tappable areas (stage coordinates)
+        extern int recompTouchTargets(float out[4][4]); float r[4][4]; int m = recompTouchTargets(r);
+        for (int i = 0; i < 4; i++) if (m & (1 << i)) logf("[touch] target %d: %.0f,%.0f-%.0f,%.0f\n", i, r[i][0], r[i][1], r[i][2], r[i][3]);
+        return;
+    }
     if (e == "focus") { extern void menuDebugFocus(); menuDebugFocus(); return; }
     if (e == "buttons") { extern void debugListButtons(); debugListButtons(); return; }
     if (e.compare(0, 4, "set ") == 0) {

@@ -1,5 +1,6 @@
 // Global objects and native classes used by the game.
 #include "display.h"
+#include "platform.h"
 #include "snapshot.h"
 #include <algorithm>
 #include <cstdio>
@@ -647,9 +648,10 @@ static Value so_flush(Act&, Value t, int, Value*) {
     std::string o = "ISAACSO1"; ser(o, getProp(t.o, intern("data")), 0);
     if (g_savePath.empty()) return VFALSE;
     std::string tmp = g_savePath + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb"); if (!f) return VFALSE;
-    fwrite(o.data(), 1, o.size(), f); fclose(f);
-    remove(g_savePath.c_str()); rename(tmp.c_str(), g_savePath.c_str());
+    FILE* f = platformFopen(tmp, "wb"); if (!f) { logf("save: can't write %s\n", tmp.c_str()); return VFALSE; }
+    bool ok = fwrite(o.data(), 1, o.size(), f) == o.size();
+    if (fclose(f) != 0) ok = false;
+    if (!ok || !platformReplaceFile(tmp, g_savePath)) { logf("save: can't write %s\n", g_savePath.c_str()); return VFALSE; }
     return VTRUE;
 }
 void sharedObjectFlushAll() { if (g_so) { Act a{vm.globalScope, VUNDEF, vm.root, nullptr}; so_flush(a, Value(g_so), 0, nullptr); } }
@@ -659,7 +661,7 @@ static Value so_getLocal(Act&, Value, int, Value*) {
     Object* so = gcNew<Object>(protos::sharedobject); so->kind = OK_SHAREDOBJ; gcPin(so);
     Value data = Value(gcNew<Object>(protos::object));
     if (!g_savePath.empty()) {
-        if (FILE* f = fopen(g_savePath.c_str(), "rb")) {
+        if (FILE* f = platformFopen(g_savePath, "rb")) {
             std::string s; char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n); fclose(f);
             if (s.compare(0, 8, "ISAACSO1") == 0) { size_t i = 8; Value d = deser(s, i, 0); if (d.isObj()) data = d; }
         }

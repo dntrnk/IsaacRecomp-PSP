@@ -235,13 +235,14 @@ void main() {
     rgb = clamp(rgb * vMul.rgb + vAdd.rgb, 0.0, 1.0);
     float aadd = vAdd.a, inkA = 0.0;
     if (aadd > 9.0) {
-        // option selected with a controller: its dark ink turns one fixed red, the paper stays as it is.
-        // aadd = 10 + brightness of everything above the option (a screen fading to black darkens the red too).
-        // Some labels are written in translucent black: their ink is made (nearly) opaque so every red is the same
-        float fade = aadd - 10.0; aadd = 0.0;
+        // option selected with a controller: its dark ink turns one fixed colour (pastel pink; deep red for the main
+        // menu's Start), the paper stays as it is. aadd = 10 (pink) or 20 (red) + brightness of everything above the
+        // option. Some labels are written in translucent black: their ink is made opaque so every option looks the same
+        bool strong = aadd > 19.0;
+        float fade = aadd - (strong ? 20.0 : 10.0); aadd = 0.0;
         float l = dot(rgb, vec3(0.299, 0.587, 0.114)) / max(fade, 0.02);
         inkA = 1.0 - smoothstep(0.66, 0.85, l);
-        rgb = mix(rgb, vec3(0.55, 0.07, 0.07) * fade, inkA);
+        rgb = mix(rgb, (strong ? vec3(0.55, 0.07, 0.07) : vec3(0.78, 0.53, 0.53)) * fade, inkA);
     }
     float a = clamp(c.a * vMul.a + aadd * c.a, 0.0, 1.0);
     a = mix(a, min(1.0, a * 3.0), inkA);
@@ -734,7 +735,8 @@ static void growR(RectF& r, bool& any, const Mat& m, double x0, double y0, doubl
 
 static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskPass);
 static float g_inkFade = -1;             // >= 0 while compiling the subtree of the focused option (see kFS)
-static void inkMark(CX& cx) { if (g_inkFade >= 0) cx.aa = (10 + g_inkFade) * 255; }
+static float g_inkBase = 10;            // 10: pink, 20: deep red (see kFS)
+static void inkMark(CX& cx) { if (g_inkFade >= 0) cx.aa = (g_inkBase + g_inkFade) * 255; }
 static uint32_t g_sceneTargetUid = 0;   // BitmapData whose texture is being drawn into (0 = the screen)
 static void compileChildren(uint32_t i, const Mat& m, const CX& cx, bool maskPass) {
     const std::vector<SnapNode>& N = g_curSnap->nodes;
@@ -777,7 +779,7 @@ static void compileNode(uint32_t i, const Mat& parent, const CX& pcx, bool maskP
     struct InkScope { float saved = g_inkFade; ~InkScope() { g_inkFade = saved; } } inkScope;
     if (!maskPass && n.uid && n.uid == g_curSnap->focusUid && g_inkFade < 0) {
         float fade = std::max(0.f, std::min(1.f, (pcx.rm + pcx.gm + pcx.bm) / 3 + (pcx.ra + pcx.ga + pcx.ba) / (3 * 255.f)));
-        if (fade > 0.97f) g_inkFade = fade;   // (once the screen starts fading to black the selection isn't shown)
+        if (fade > 0.97f) { g_inkFade = fade; g_inkBase = g_curSnap->focusStrong ? 20.f : 10.f; }   // (once the screen starts fading to black the selection isn't shown)
     }
     if (!maskPass && n.blur && g_renderCfg.filters && n.kind != SN_BITMAP) {
         size_t at = g_cmds.size();

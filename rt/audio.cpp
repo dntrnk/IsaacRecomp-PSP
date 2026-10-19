@@ -128,6 +128,24 @@ static std::string defaultOutputName() {
 #endif
     return std::string();
 }
+// the system's default is a controller (connected before the game started): another output instead. Speakers or
+// headphones first, then anything that isn't a monitor (HDMI / DisplayPort audio), a digital output or virtual
+static std::string bestNonController() {
+    std::string best; int bestScore = -1000;
+    int n = SDL_GetNumAudioDevices(0);
+    for (int i = 0; i < n; i++) {
+        const char* nm = SDL_GetAudioDeviceName(i, 0);
+        if (!nm || isControllerAudio(nm)) continue;
+        std::string l; for (const char* p = nm; *p; p++) l += (char)tolower((unsigned char)*p);
+        int sc = 0;
+        for (const char* k : {"speaker", "altavo", "haut-parleur", "lautsprecher", "alto-falante", "headphone", "auricular",
+                              "casque", "kopfh", "realtek", "headset"}) if (l.find(k) != std::string::npos) sc += 10;
+        for (const char* k : {"hdmi", "displayport", "display audio", "nvidia", "amd high definition", "digital", "spdif",
+                              "s/pdif", "virtual", "steam streaming", "cable", "vb-audio", "monitor"}) if (l.find(k) != std::string::npos) sc -= 10;
+        if (sc > bestScore) { bestScore = sc; best = nm; }
+    }
+    return best;
+}
 static bool openDevice(const std::string& name) {
     SDL_AudioSpec want{}, have{};
     // mix directly at the device's rate (one resampling step instead of ours + SDL's conversion)
@@ -144,6 +162,11 @@ static bool openDevice(const std::string& name) {
 void audioInit(bool device) {
     if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
     std::string def = (kIsAndroid || kIsSwitch) ? std::string() : defaultOutputName();
+    if (!def.empty() && isControllerAudio(def)) {
+        std::string other = bestNonController();
+        logf("audio: the default output is a controller (%s)%s%s\n", def.c_str(), other.empty() ? "" : ", using ", other.c_str());
+        if (!other.empty()) def = other;
+    }
     if (def.empty() || !openDevice(def)) openDevice(std::string());
     g_rootTracers.push_back([](Tracer& tr) { audioLock(); for (auto& c : g_chans) if (c.active) tr.mark(c.owner); audioUnlock(); });
 }
@@ -162,7 +185,7 @@ void audioDeviceTick(double now) {
         bool moved = !def.empty() && def != g_devName && !isControllerAudio(def);
         if (!lost && !moved) continue;
         std::string want = moved ? def : std::string();
-        if (lost && !moved && !def.empty() && !isControllerAudio(def)) want = def;
+        if (lost && !moved) want = (!def.empty() && !isControllerAudio(def)) ? def : bestNonController();
         logf("audio: output device %s, switching to %s\n", lost ? "lost" : "changed", want.empty() ? "the default" : want.c_str());
         std::lock_guard<std::recursive_mutex> lk(g_devMu);
         SDL_CloseAudioDevice(g_dev); g_dev = 0;

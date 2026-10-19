@@ -871,7 +871,8 @@ void debugListButtons() {   // (testing) eval buttons
         RectF r = stageBounds(b);
         double a = 1; for (DisplayObject* p = b; p; p = p->parent) a *= p->cx.am;
         RectF h = hitStageBounds(b);
-        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f hit=%.0f,%.0f-%.0f,%.0f kids=%d\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1, h.x0, h.y0, h.x1, h.y1, (int)b->kids.size());
+        if (r.valid()) { ButtonObj* t = buttonAt((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2); logf("[button]   top at center: %s %s\n", t == b ? "itself" : t ? targetPath(t)->s.c_str() : "none", t && t != b ? "(other)" : ""); }
+        logf("[button] %s en=%d alpha=%.2f rect=%.0f,%.0f-%.0f,%.0f hit=%.0f,%.0f-%.0f,%.0f kids=%d conds=%d\n", targetPath(b)->s.c_str(), (int)b->enabled, a, r.x0, r.y0, r.x1, r.y1, h.x0, h.y0, h.x1, h.y1, (int)b->kids.size(), (int)b->def->conds.size());
     }
 }
 bool touchAnyButton() {

@@ -1,4 +1,4 @@
-THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.3.0
+THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.3.1
 =================================================================================
 
 All three versions of the Flash game on Steam are supported: the original, Wrath of the

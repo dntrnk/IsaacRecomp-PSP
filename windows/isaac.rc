@@ -1,0 +1,3 @@
+// Windows resources: the application manifest (UTF-8 code page)
+#include <winuser.h>
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "isaac.manifest"
