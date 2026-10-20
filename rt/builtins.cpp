@@ -64,10 +64,12 @@ static Value arr_ctor(Act&, Value, int argc, Value* argv) {
     else a->el.assign(argv, argv + argc);
     return Value((Object*)a);
 }
-static Value arr_push(Act&, Value t, int argc, Value* argv) { Array* a = thisArr(t); if (!a) return VUNDEF; for (int i = 0; i < argc; i++) a->el.push_back(argv[i]); return Value((double)a->el.size()); }
-static Value arr_pop(Act&, Value t, int, Value*) { Array* a = thisArr(t); if (!a || a->el.empty()) return VUNDEF; Value v = a->el.back(); a->el.pop_back(); return v.t == T_HOLE ? VUNDEF : v; }
-static Value arr_shift(Act&, Value t, int, Value*) { Array* a = thisArr(t); if (!a || a->el.empty()) return VUNDEF; Value v = a->el.front(); a->el.erase(a->el.begin()); return v.t == T_HOLE ? VUNDEF : v; }
-static Value arr_unshift(Act&, Value t, int argc, Value* argv) { Array* a = thisArr(t); if (!a) return VUNDEF; a->el.insert(a->el.begin(), argv, argv + argc); return Value((double)a->el.size()); }
+static Value arr_push(Act&, Value t, int argc, Value* argv) { Array* a = thisArr(t); if (!a) return VUNDEF; for (int i = 0; i < argc; i++) { if (a->customOrd) a->ord.push_back((uint32_t)a->el.size()); a->el.push_back(argv[i]); } return Value((double)a->el.size()); }
+static Value arr_pop(Act&, Value t, int, Value*) { Array* a = thisArr(t); if (!a || a->el.empty()) return VUNDEF; Value v = a->el.back(); a->el.pop_back(); arrTruncOrder(a); return v.t == T_HOLE ? VUNDEF : v; }
+static Value arr_shift(Act&, Value t, int, Value*) { Array* a = thisArr(t); if (!a || a->el.empty()) return VUNDEF; Value v = a->el.front(); a->el.erase(a->el.begin()); arrTruncOrder(a); return v.t == T_HOLE ? VUNDEF : v; }
+static Value arr_unshift(Act&, Value t, int argc, Value* argv) { Array* a = thisArr(t); if (!a) return VUNDEF; size_t old = a->el.size(); a->el.insert(a->el.begin(), argv, argv + argc);
+    if (a->customOrd) for (size_t i = a->el.size(); i-- > old;) a->ord.push_back((uint32_t)i);   // Ruffle sets the top first
+    return Value((double)a->el.size()); }
 static int clampIdx(double v, int len) { if (std::isnan(v)) return 0; int i = (int)v; if (i < 0) i = std::max(0, len + i); return std::min(i, len); }
 static Value arr_slice(Act&, Value t, int argc, Value* argv) {
     Array* a = thisArr(t); if (!a) return VUNDEF; int len = (int)a->el.size();
@@ -81,6 +83,7 @@ static Value arr_splice(Act&, Value t, int argc, Value* argv) {
     Array* r = gcNew<Array>(); r->el.assign(a->el.begin() + s, a->el.begin() + s + del);
     a->el.erase(a->el.begin() + s, a->el.begin() + s + del);
     if (argc > 2) a->el.insert(a->el.begin() + s, argv + 2, argv + argc);
+    if (a->customOrd) { if (a->el.size() > (size_t)len) { for (size_t i = len; i < a->el.size(); i++) a->ord.push_back((uint32_t)i); } else arrTruncOrder(a); }
     return Value((Object*)r);
 }
 static Value arr_join(Act&, Value t, int argc, Value* argv) {
@@ -297,8 +300,12 @@ static Value mc_hitTest(Act& a, Value t, int argc, Value* argv) {
         // creep/blood test (shit() -> blorz.hitTest) checked a point 1.5-2.25x away from the player.
         double gx = toNum(argv[0]), gy = toNum(argv[1]);
         if (!std::isfinite(gx) || !std::isfinite(gy)) return VFALSE;
+        double ox = gx, oy = gy;
         if (vm.root) vm.root->m.apply(gx, gy, gx, gy);
-        return VB(hitTestPoint(d, gx, gy, argc > 2 && truthy(argv[2])));
+        bool r = hitTestPoint(d, gx, gy, argc > 2 && truthy(argv[2]));
+        static const bool trace = getenv("ISAAC_HITTRACE") != nullptr;
+        if (trace) logf("[hit] t=%u %s %s %s %s = %s\n", g_player.tick, targetPath(d)->s.c_str(), toStr(Value(ox))->s.c_str(), toStr(Value(oy))->s.c_str(), argc > 2 && truthy(argv[2]) ? "true" : "false", r ? "true" : "false");
+        return VB(r);
     }
     Value o = resolveTargetPath(a, arg(argc, argv, 0));
     DisplayObject* e = asDO(o); if (!e) return VFALSE;
@@ -849,7 +856,7 @@ void initGlobals() {
         Object* sysz = newProtoObj(object);
         setProp(sysz, intern("macVerString"), Value(mkstr("recomp")));
         setProp(mdm, intern("System"), Value(sysz));
-        defv(g, "mdm", Value(mdm));
+        if (!getenv("ISAAC_NOMDM")) defv(g, "mdm", Value(mdm));   // (differential tests: no Zinc, like Ruffle)
     }
     for (Object* o : {g, flash, disp, geom, math, key, mouse, sys, caps, stage}) gcPin(o);
 

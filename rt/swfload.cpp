@@ -186,7 +186,7 @@ void buildFillPaths(std::vector<std::vector<Edge>>& perFill, std::vector<Path>& 
 }
 
 // Reads SHAPERECORDs. If glyph=true, there are no styles (font).
-void readShapeRecords(Rd& r, int shapeTag, std::vector<ShapeLayer>& layers, int fillBits, int lineBits) {
+void readShapeRecords(Rd& r, int shapeTag, std::vector<ShapeLayer>& layers, int fillBits, int lineBits, std::vector<HitEdge>* hit = nullptr) {
     ShapeLayer* L = &layers.back();
     std::vector<std::vector<Edge>> fillEdges(L->fills.size() + 1);
     std::vector<Path> linePaths(L->lines.size() + 1);
@@ -215,6 +215,7 @@ void readShapeRecords(Rd& r, int shapeTag, std::vector<ShapeLayer>& layers, int 
             if (flags & 2) f0 = r.ub(fillBits);
             if (flags & 4) f1 = r.ub(fillBits);
             if (flags & 8) ln = r.ub(lineBits);
+            if ((flags & 16) && hit) hit->push_back(HitEdge{0, 0, 0, 0, 0, 0, 2, false, false, -1});
             if (flags & 16) {
                 flushLayer();
                 layers.emplace_back(); L = &layers.back();
@@ -237,6 +238,10 @@ void readShapeRecords(Rd& r, int shapeTag, std::vector<ShapeLayer>& layers, int 
             e.cx = x + cdx; e.cy = y + cdy; x = e.cx + adx; y = e.cy + ady; e.curve = true;
         }
         e.x1 = x; e.y1 = y;
+        if (hit) {
+            int32_t sw = (ln > 0 && ln - 1 < (int)L->lines.size()) ? (int32_t)std::lround(L->lines[ln - 1].width * 20.0) : -1;
+            hit->push_back(HitEdge{e.x0, e.y0, e.cx, e.cy, e.x1, e.y1, (uint8_t)(e.curve ? 1 : 0), f0 > 0, f1 > 0, sw});
+        }
         if (f1 > 0 && f1 < (int)fillEdges.size()) fillEdges[f1].push_back(e);
         if (f0 > 0 && f0 < (int)fillEdges.size()) {
             Edge rv{e.x1, e.y1, e.cx, e.cy, e.x0, e.y0, e.curve}; fillEdges[f0].push_back(rv);
@@ -268,7 +273,7 @@ ShapeDef* parseShape(Rd& r, int tag) {
     s->layers.emplace_back();
     readFillStyles(r, tag, s->layers.back().fills); readLineStyles(r, tag, s->layers.back().lines);
     r.align(); int fb = r.ub(4), lb = r.ub(4);
-    readShapeRecords(r, tag, s->layers, fb, lb);
+    readShapeRecords(r, tag, s->layers, fb, lb, &s->hitEdges);
     return s;   // (hit polygons are computed the first time they're needed: shapeHitPolys)
 }
 
@@ -530,9 +535,11 @@ void parseTimeline(const uint8_t* d, size_t p, size_t end, SpriteDef* sp, bool i
             case 15: {
                 FrameCmd fc; fc.kind = FrameCmd::SOUND; fc.soundId = r.u16(); uint8_t fl = r.u8(); fc.soundFlags = fl;
                 if (fl & 1) fc.inPoint = r.u32(); if (fl & 2) fc.outPoint = r.u32(); if (fl & 4) fc.loops = r.u16();
+                if (fl & 8) { int n = r.u8(); for (int i = 0; i < n; i++) { uint32_t at = r.u32(); uint32_t l = r.u16(); uint32_t rr = r.u16(); fc.envelope.push_back({at, l, rr}); } }
                 curFrame().push_back(fc); break;
             }
-            case 43: { std::string lbl = r.str(); if (!sp->labels.count(lbl)) sp->labels[lbl] = frame + 1; break; }
+            case 43: { std::string lbl = r.str(); for (auto& ch : lbl) ch = (char)tolower((unsigned char)ch);   // (AVM1 labels are case-insensitive)
+                       if (!sp->labels.count(lbl)) sp->labels[lbl] = frame + 1; break; }
             case 18: case 45: {
                 r.u8(); uint8_t f = r.u8(); r.u16();
                 if ((f >> 4) == 2) {

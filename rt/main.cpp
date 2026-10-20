@@ -26,6 +26,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <dirent.h>
@@ -41,6 +42,9 @@
 #include <cmath>
 
 namespace fl {
+extern bool g_rngSeedFixed;
+extern bool g_autoAim;
+int autoAimKey();
 extern std::atomic<bool> g_restartRequest;
 void initGlobals();
 void runIntervals();
@@ -114,6 +118,14 @@ struct Config {
     bool joystickAcceleration = true;   // analog sticks / touch: movement speed follows how far the stick is pushed
     int renderHeight = 0;            // (Android) render resolution (height in pixels); 0 = automatic
     int autoHeight = 0;              // (Android) the resolution automatic mode settled on for this device (written by the game)
+    bool gcAfterTick = true;         // collect garbage after the tick has been handed to the renderer (not inside it)
+    int maxMarginMs = fl::kIsSwitch ? 6 : 0;   // cap of the adaptive display delay (ms); 0 = automatic (4..30 ms)
+};
+// settings added after the first release: written into an existing isaac.ini (with their explanation) when missing,
+// so they can be found and changed
+static const char* kLateSettings[][3] = {
+    {"gc_after_tick", "; gc_after_tick = 1 frees memory after each game tick has been sent to the screen, so it doesn't delay the\n;   image; 0 = inside the tick, as in 1.3", nullptr},
+    {"max_margin", "; max_margin = how far behind the game the image may be shown, in ms (it follows how long the game's ticks take,\n;   to keep motion smooth); a cap keeps the delay constant (late ticks are extrapolated); 0 = automatic (4-30 ms)", nullptr},
 };
 static std::string trim(std::string s) { while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back(); size_t i = 0; while (i < s.size() && isspace((unsigned char)s[i])) i++; return s.substr(i); }
 static void loadConfig(const std::string& path, Config& c) {
@@ -136,6 +148,7 @@ static void loadConfig(const std::string& path, Config& c) {
              "; joystick_acceleration = 1: with an analog stick (controller, Switch, touch joystick) the speed follows how far\n"
              ";   it is pushed, for small precise moves (top speed unchanged); 0 = always full speed, as on the keyboard\n"
              "joystick_acceleration = 1\n"
+             << kLateSettings[0][1] << "\ngc_after_tick = 1\n" << kLateSettings[1][1] << "\nmax_margin = " << c.maxMarginMs << "\n"
 #if defined(__ANDROID__) || defined(__SWITCH__)
              "; touch_controls = 0 turns off the touch joysticks, HUD taps and pause button (touch then only works in menus)\n"
              "touch_controls = 1\n"
@@ -148,10 +161,12 @@ static void loadConfig(const std::string& path, Config& c) {
              ;
         return;
     }
+    std::set<std::string> seen;
     while (std::getline(f, line)) {
         line = trim(line); if (line.empty() || line[0] == ';' || line[0] == '#') continue;
         size_t eq = line.find('='); if (eq == std::string::npos) continue;
         std::string k = trim(line.substr(0, eq)), v = trim(line.substr(eq + 1));
+        seen.insert(k);
         int n = atoi(v.c_str());
         if (k == "swf") c.swf = v; else if (k == "game" || k == "juego") c.game = v; else if (k == "fullscreen") c.fullscreen = n; else if (k == "vsync") c.vsync = n;
         else if (k == "width") c.width = n; else if (k == "height") c.height = n; else if (k == "volume") c.volume = n;
@@ -159,6 +174,14 @@ static void loadConfig(const std::string& path, Config& c) {
         else if (k == "performance") c.performance = n; else if (k == "touch_controls") c.touchControls = n;
         else if (k == "joystick_acceleration") c.joystickAcceleration = n;
         else if (k == "render_height") c.renderHeight = n; else if (k == "auto_height") c.autoHeight = n;
+        else if (k == "gc_after_tick") c.gcAfterTick = n; else if (k == "max_margin") c.maxMarginMs = std::max(0, std::min(30, n));
+    }
+    f.close();
+    {   // an isaac.ini from an earlier version: add the newer settings (with their defaults) so they can be changed
+        std::string add;
+        for (auto& ls : kLateSettings) if (!seen.count(ls[0]))
+            add += std::string("\n") + ls[1] + "\n" + ls[0] + " = " + (std::string(ls[0]) == "max_margin" ? std::to_string(c.maxMarginMs) : std::string("1")) + "\n";
+        if (!add.empty()) { std::ofstream o(path, std::ios::app); o << add; }
     }
 #ifdef __SWITCH__
     // console memory is fixed: never more than twice the planned amount, and never less (an isaac.ini from an
@@ -417,9 +440,17 @@ int main(int argc, char** argv) {
     // everything on the SD card: the .swf, isaac.ini, the save and the screenshots
     std::string base = "sdmc:/switch/isaac/";
     mkdir("sdmc:/switch", 0777); mkdir("sdmc:/switch/isaac", 0777);
-    std::string pref = base;
+    // saves (and the learned preload lists, screenshots, performance.txt) in sd:/switch/isaac/saves/, as on PC (the
+    // folder next to the program). Up to 1.3.1 they were in sd:/switch/isaac/ itself: copied over the first time.
+    std::string pref = base + "saves/";
+    bool prefOk = mkdir("sdmc:/switch/isaac/saves", 0777) == 0 || errno == EEXIST;
+    if (!prefOk) pref = base;
     freopen((base + "log.txt").c_str(), "w", stderr);   // program messages (useful if something fails)
     setvbuf(stderr, nullptr, _IONBF, 0);
+    if (prefOk)
+        for (const char* f : {"isaac_save.sol", "isaac_og_save.sol", "isaac_eternal_save.sol", "preload.txt", "preload_og.txt", "preload_eternal.txt"})
+            if (!platformFileExists(pref + f) && platformFileExists(base + f) && platformCopyFile(base + f, pref + f))
+                fprintf(stderr, "%s copied to the saves folder\n", f);
     // an uncaught exception must not return to the loader with threads (audio) still alive: log it and
     // terminate the whole process
     std::set_terminate([] {
@@ -453,9 +484,17 @@ int main(int argc, char** argv) {
     if (base.empty()) base = "/storage/emulated/0/IsaacRecomp";
     mkdir(base.c_str(), 0777);
     base += "/";
-    std::string pref = base;
+    // saves (and the learned preload lists, screenshots, performance.txt) in IsaacRecomp/saves/, as on PC and Switch.
+    // Up to 1.3.1 they were in IsaacRecomp/ itself: copied over the first time.
+    std::string pref = base + "saves/";
+    bool prefOk = mkdir((base + "saves").c_str(), 0777) == 0 || errno == EEXIST;
+    if (!prefOk) pref = base;
     freopen((base + "log.txt").c_str(), "w", stderr);
     setvbuf(stderr, nullptr, _IONBF, 0);
+    if (prefOk)
+        for (const char* f : {"isaac_save.sol", "isaac_og_save.sol", "isaac_eternal_save.sol", "preload.txt", "preload_og.txt", "preload_eternal.txt"})
+            if (!platformFileExists(pref + f) && platformFileExists(base + f) && platformCopyFile(base + f, pref + f))
+                fprintf(stderr, "%s copied to the saves folder\n", f);
     std::set_terminate([] {
         const char* what = "(unknown)";
         try { if (auto e = std::current_exception()) std::rethrow_exception(e); }
@@ -517,6 +556,7 @@ int main(int argc, char** argv) {
             while (std::getline(f, line)) { std::istringstream ss(line); ScriptCmd c; if (ss >> c.tick >> c.op) { std::getline(ss, c.arg); c.arg = trim(c.arg); script.push_back(c); } }
         } else if (a.size() > 4) { std::string ext = a.substr(a.size() - 4); for (auto& ch : ext) ch = (char)tolower((unsigned char)ch); if (ext == ".swf" || ext == ".exe") cfg.swf = a; }
     }
+    if (headless) fl::g_rngSeedFixed = true;   // (deterministic tests)
     // ---- game data: the Steam Isaac.exe (the SWF is inside it) or an already extracted .swf. Three versions are
     // supported (original, Wrath of the Lamb and Eternal Edition), each with its own recompiled code; all
     // .exe/.swf files in the folder are scanned and, if there is more than one game, the user is asked which to open.
@@ -723,6 +763,7 @@ int main(int argc, char** argv) {
             else if (c.op == "shot") shot(1.0, c.arg);
             else if (c.op == "shotf") { std::istringstream ss(c.arg); double fr = 0; std::string file; ss >> fr >> file; shot(fr, file); }
             else if (c.op == "click") { double x, y; sscanf(c.arg.c_str(), "%lf %lf", &x, &y); mouseEvent(x, y, 0); mouseEvent(x, y, 1); mouseEvent(x, y, 2); }
+            else if (c.op == "mmove" || c.op == "mdown" || c.op == "mup") { double x, y; sscanf(c.arg.c_str(), "%lf %lf", &x, &y); mouseEvent(x, y, c.op == "mmove" ? 0 : c.op == "mdown" ? 1 : 2); }
             else if (c.op == "eval") { debugEval(c.arg); }
             else if (c.op == "quit") running = false;
         }
@@ -745,7 +786,7 @@ int main(int argc, char** argv) {
         // ---------------------------------------------------------------- test mode: deterministic, single thread
         while (running && !g_player.quit) {
             SDL_Event e; while (SDL_PollEvent(&e)) if (e.type == SDL_QUIT) running = false;
-            g_player.timeMs = g_player.tick * dt * 1000.0;
+            g_player.timeMs = g_player.tick * 1000.0 / g_frameRate;   // (exact: n * 1000 / 30, like the Ruffle harness)
             runScript([&](double fr, const std::string& file) {
                 if (norender) return;
                 int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh); renderFrame(dw, dh, fr);
@@ -754,6 +795,11 @@ int main(int argc, char** argv) {
                 renderScreenshot(file.c_str());
             });
             if (!running) break;
+            {   // (testing) auto-aim for the differential runs (debug.cpp)
+                static int aimKey = 0;
+                int k = fl::g_autoAim ? fl::autoAimKey() : 0;
+                if (k != aimKey) { if (aimKey) keyEvent(aimKey, 0, false); if (k) keyEvent(k, 0, true); aimKey = k; }
+            }
             monkeyStep();
             Uint64 lt0 = SDL_GetPerformanceCounter(); size_t heap0 = gcCount();
             static int sampleTick = getenv("ISAAC_SAMPLE_TICK") ? atoi(getenv("ISAAC_SAMPLE_TICK")) : -1;
@@ -764,6 +810,8 @@ int main(int argc, char** argv) {
             gcCollect();
             if ((int)g_player.tick == sampleTick + 1) profSampleStop();
             double lms = (SDL_GetPerformanceCounter() - lt0) * 1000.0 / freq;
+            static const bool tickMs = getenv("ISAAC_TICKMS") != nullptr;   // (testing) logic cost of every tick
+            if (tickMs) logf("[tick] %u %.3f %d %zu\n", g_player.tick, lms, entityCount(), gcCount());
             if (stats) {
                 int nb = entityCount();
                 logicMs.push_back(lms); ballCount.push_back(nb); allocs.push_back((double)gcCount() - (double)heap0);
@@ -877,6 +925,7 @@ int main(int argc, char** argv) {
             platformSetThread(1, 0x2C);                         // Switch: core 1 dedicated to logic
             setThreadRole(ROLE_LOGIC);
             double base = nowSec(); uint64_t n = 0;
+            const double clockStart = base;   // getTimer(): real milliseconds since start, as Flash
             std::vector<InputEv> evs;
             uint32_t tapSpaceUntil = 0;
             bool tapOnButtons = false;    // touch: the last mouse-down happened on a screen with buttons   // touch: Space pressed by a tap on a screen without buttons, released at this tick
@@ -918,12 +967,16 @@ int main(int argc, char** argv) {
                 evs.clear();
                 if (tapSpaceUntil && g_player.tick >= tapSpaceUntil) { keyEvent(32, 0, false); tapSpaceUntil = 0; }
                 monkeyStep();
-                g_player.timeMs = n * dt * 1000.0;
+                // Flash's getTimer() is the real time. The game stirs the random generator at the start of each floor
+                // with getTimer() % 100 draws; a frame clock (n * 33.3 ms) only gave 0, 33 or 66. Headless tests keep
+                // the frame clock (deterministic, like the Ruffle harness); ISAAC_FRAMECLOCK=1 forces it here too.
+                static const bool frameClock = getenv("ISAAC_FRAMECLOCK") != nullptr;
+                g_player.timeMs = frameClock ? n * 1000.0 / g_frameRate : (nowSec() - clockStart) * 1000.0;
                 renderFreeRetired();   // (snapshots the renderer is done with: freed here, not on the render thread)
                 double t0 = nowSec();
                 runFrame(); runIntervals(); recompPatchesTick();
                 { bool ig = false, gp = recompInGameplay(&ig); menuUiTick(gp, ig); }
-                gcCollect((nowSec() - t0) * 1000.0);
+                if (!cfg.gcAfterTick) gcCollect((nowSec() - t0) * 1000.0);
                 SnapPtr snap = buildSnapshot();
                 menuUiFill(*snap);
                 snap->time = target; snap->logicMs = (nowSec() - t0) * 1000.0;
@@ -933,6 +986,9 @@ int main(int argc, char** argv) {
                 snap->quit = g_player.quit || lastTick;
                 snap->pubDelay = nowSec() - target;
                 { std::lock_guard<std::mutex> lk(snapMu); snapQ.push_back(snap); }
+                // gc_after_tick: the collection doesn't change the game state, so it can run once the tick is on its way
+                // to the screen (it then doesn't count in the publish delay that sets the display margin)
+                if (cfg.gcAfterTick) gcCollect(snap->logicMs);
                 n++;
                 if (snap->quit) break;
             }
@@ -1481,6 +1537,7 @@ int main(int argc, char** argv) {
             double worst = 0;
             if (!procTimes.empty()) { std::vector<double> v(procTimes.begin(), procTimes.end()); std::sort(v.begin(), v.end()); worst = v[std::min(v.size() - 1, v.size() * 9 / 10)]; }
             double want = std::min(0.030, std::max(0.004, worst + 0.002));
+            if (cfg.maxMarginMs > 0) want = std::min(want, std::max(0.004, cfg.maxMarginMs / 1000.0));   // max_margin (isaac.ini)
             if (want > delta) delta = std::min(want, delta + 0.0005); else delta = std::max(want, delta - 0.0001);
             double simT = present - delta + cfg.interpLead * dt;   // interp_lead: optional extrapolation (default 0)
             // adopt the snapshots that are due (in order: each may bring new pixels)

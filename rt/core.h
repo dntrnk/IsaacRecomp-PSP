@@ -148,6 +148,11 @@ struct Object : GcObj {
 };
 struct Array final : Object {
     std::vector<Value> el;   // T_HOLE = missing
+    // for-in order (Flash/Ruffle: most recently added element first). While elements are only added in ascending
+    // index order, that is descending index order and `ord` is unused; once an element is added below an existing
+    // one (e.g. `levz = new Array(200)` filled in tile order), `ord` lists the element indices in insertion order.
+    std::vector<uint32_t> ord;
+    bool customOrd = false;
     Array();
     void trace(Tracer& tr) override { Object::trace(tr); for (auto& x : el) traceValue(tr, x); }
 };
@@ -274,6 +279,9 @@ Value makeFunction(Act& a, CodeFn code, const char* name);
 void defineFunction(Act& a, CodeFn code, Str* name);
 Value initArray(int n, Value* el);
 Value initObject(int n, Value* kv);   // kv: [v0,k0,v1,k1...] in pop order
+void arrNoteInsert(Array* a, size_t i);   // for-in order bookkeeping (Array::ord)
+void arrTruncOrder(Array* a);
+void arrResetOrder(Array* a);
 void enumerate2(const Value& obj);    // pushes undefined + keys onto vm.sp
 
 // Building activations for compiled functions

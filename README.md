@@ -40,7 +40,7 @@ need the original game. What changes is *how* it runs, and *where*:
 |-----------------------|----------------------------------|-----------------------------------------------------|
 | Frame rate            | 30 fps                           | **60 fps** (or whatever your display does: 120, 144…) |
 | Resolution            | 800×600, upscaled                | **Native** (1080p, 1440p, 4K…)                      |
-| Game logic            | 30 Hz                            | Exactly 30 Hz: same speed, physics and patterns     |
+| Game logic            | 30 Hz                            | Exactly 30 Hz: same physics and patterns, checked frame by frame against the original |
 | Performance           | Can stutter with many enemies    | Smooth, with drawing spread across CPU cores        |
 | Controllers           | Needed JoyToKey                  | **Supported out of the box**, with analog movement  |
 | Versions              | One per install                  | **Original, Wrath of the Lamb and Eternal Edition** in one program |
@@ -229,7 +229,7 @@ through Android's low-latency audio path. To choose the resolution yourself, set
 
 ## 🎮 Nintendo Switch (homebrew)
 
-The same native recomp, built as a homebrew application (`.nro`, version 1.3.1). It contains no code or assets from
+The same native recomp, built as a homebrew application (`.nro`, version 1.4.0). It contains no code or assets from
 Nintendo or from the game: you provide the game's `Isaac.exe` yourself, exactly as on PC.
 
 **You need:**
@@ -290,6 +290,8 @@ and taps in menus. The pause button is only shown in handheld mode.
 | `cache_mb`              | depends  | Video memory for already rasterized graphics                    |
 | `low_latency`           | `1`      | Keep reading input while waiting for the display (less input lag) |
 | `interp_lead`           | `0`      | Experimental, up to `0.5`: draw slightly ahead for less visual delay (small overshoot when stopping) |
+| `gc_after_tick`         | `1`      | Free memory after each game tick has been sent to the screen, so it doesn't delay the image (`0` = inside the tick, as in 1.3) |
+| `max_margin`            | `0` (Switch: `6`) | Cap, in ms, of how far behind the game the image is shown (`0` = automatic, 4-30 ms). A cap keeps input delay constant in busy rooms |
 | `performance`           | `0`      | `1` = performance overlay always on, written to `performance.txt` |
 | `joystick_acceleration` | `1`      | Analog movement: speed follows how far the stick is pushed (full speed at ¾ of its travel). `0` = always full speed |
 | `touch_controls`        | `1`      | Android / Switch: `0` turns off the touch joysticks, HUD taps and pause button |
@@ -302,8 +304,8 @@ and taps in menus. The pause button is only shown in handheld mode.
 |----------|-----------------------------------------------|
 | Windows  | The `saves` folder next to `IsaacRecomp.exe`  |
 | Linux    | The `saves` folder next to `isaac`            |
-| Android  | The `IsaacRecomp` folder in the internal storage |
-| Switch   | `sd:/switch/isaac/`                           |
+| Android  | `IsaacRecomp/saves/` in the internal storage (up to 1.3.1: `IsaacRecomp/`, copied over by 1.4.0) |
+| Switch   | `sd:/switch/isaac/saves/` (up to 1.3.1: `sd:/switch/isaac/`, copied over by 1.4.0) |
 
 There is one save file per version (`isaac_og_save.sol`, `isaac_save.sol`, `isaac_eternal_save.sol`), and the
 format is the same everywhere, so you can copy saves between PC, Android and Switch.
@@ -470,6 +472,10 @@ header. The decrypted SWF is **byte-for-byte identical** to the original.
   seed (`--monkey`).
 - **Regression:** the same seed produces the same logic sequence across engine versions, and screenshots are
   compared pixel by pixel.
+- **Differential tests against the original** (`tools/difftest/`): a patched [Ruffle](https://github.com/ruffle-rs/ruffle)
+  runs the same game file with the same input, random numbers and clock, and the game state (every enemy, tear and
+  pickup, the player, the room) is compared frame by frame. Every enemy, boss, item, pill, card and trinket of the
+  three versions plays identically, and the original 800x600 game file plays identically to the high-resolution one.
 - **Stability:** tens of thousands of ticks of random input on all three versions, with no failures.
 - **Mobile code on PC:** the OpenGL ES renderer (`ISAAC_GLES=1`) and the touch controls (`ISAAC_TOUCH=1`, plus
   scripted synthetic touches) can be exercised on a desktop build.

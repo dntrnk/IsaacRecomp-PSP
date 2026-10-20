@@ -109,6 +109,12 @@ Created automatically next to the executable the first time you run it.
   interp_lead = 0     experimental, 0 to 0.5: draws that fraction of a tick ahead
                       (less visual delay, but movement can overshoot slightly when you
                       stop or turn). The game logic is never affected.
+  gc_after_tick = 1   frees memory after each game tick has been sent to the screen, so
+                      it doesn't delay the image (0 = inside the tick, as in 1.3)
+  max_margin = 0      how far behind the game the image may be shown, in ms. It follows
+                      how long the game's ticks take (smooth motion); a cap keeps the
+                      delay constant, late ticks being extrapolated. 0 = automatic
+                      (4-30 ms); 6 on Switch
   game = wotl         last version played (og, wotl or eternal; the old key
                       "juego" is still accepted)
   performance = 0     1 = performance diagnostics always on (same as F3, see below)
@@ -164,7 +170,7 @@ seconds, during the opening cutscene) touches are ignored; touching shows the pr
 Bluetooth or USB controllers work as on PC (see CONTROLS); the joysticks only appear
 when you touch the screen.
 Performance diagnostics: set performance = 1 in IsaacRecomp/isaac.ini; the overlay
-appears and IsaacRecomp/performance.txt is written.
+appears and IsaacRecomp/saves/performance.txt is written.
 The game runs at 960x720 (like on Switch), scaled to the screen with black bars. To keep
 60 fps it renders at 720 lines and, if the device still can't keep up during play, goes
 down to 600, 540 or 480 by itself (remembered in isaac.ini as auto_height). To choose
@@ -175,8 +181,10 @@ SAVE DATA
 ---------
 The game is saved when you quit (and whenever the game asks for it) in:
   Windows / Linux: the "saves" folder next to the program (next to "tools")
-  Android: the IsaacRecomp folder in the internal storage
-  Switch:  sd:/switch/isaac/
+  Android: IsaacRecomp/saves/ in the internal storage (up to 1.3.1: IsaacRecomp/, copied
+           over the first time 1.4.0 starts)
+  Switch:  sd:/switch/isaac/saves/ (next to "tools"; up to 1.3.1: sd:/switch/isaac/, copied
+           over the first time 1.4.0 starts)
 with one file per version: isaac_og_save.sol (original), isaac_save.sol (Wrath of the
 Lamb) and isaac_eternal_save.sol (Eternal Edition).
 Up to version 1.3.0 the PC versions saved in %APPDATA%\IsaacRecomp\WrathOfTheLamb\
@@ -185,6 +193,34 @@ starts, the saves found there are copied to the "saves" folder (the old ones are
 The same folder also holds preload.txt / preload_og.txt / preload_eternal.txt
 (graphics learned on this machine), screenshots and performance.txt.
 Saves from the Flash game can be converted with tools/save_converter.html (see above).
+
+CHANGES IN VERSION 14 (v1.4.0 public release numbering)
+--------------------------------------------------------
+- Gameplay checked against the original: every enemy, boss, item, pill, card and trinket
+  of the three games was played side by side with the original Flash game (in the Ruffle
+  emulator, same input and same random numbers) and compared frame by frame. Fixed:
+  - Mom's Knife drifted from the original over time (rotations and scales are now kept
+    exactly as the game sets them).
+  - When a boss died, the poops in the room broke in a different order than in the
+    original (the order the game goes through lists in "for ... in" loops).
+- The Hourglass behaves as in the original again: slowed enemies fire twice per attack
+  and the Widow spawns twice the spiders (version 12 had changed it, but that is how the
+  original game plays).
+- The game's timer follows the real clock, as in Flash: the random numbers the game
+  shuffles at the start of each floor vary as much as in the original.
+- Switch and Android: the game's calculations give exactly the same results as on PC.
+- Switch: saves, preload*.txt and performance.txt now go in sd:/switch/isaac/saves/, and
+  the save converter comes in sd:/switch/isaac/tools/, as on PC. The saves in
+  sd:/switch/isaac/ are copied there the first time (the old files are kept).
+- Android: the same, in IsaacRecomp/saves/ (copied from IsaacRecomp/ the first time).
+- Sound: the game no longer waits for the sound mixer (smoother busy rooms, especially on
+  Switch); the music is no longer the first sound cut when too many play at once; the
+  chest and Satan sounds of the endings play at their original (lower) volume; Switch
+  mixes at the console's own 48 kHz.
+- Lower input delay in busy rooms (most noticeable on Switch). Two new isaac.ini settings,
+  added to an existing isaac.ini automatically: gc_after_tick (memory is freed after each
+  game tick is sent to the screen) and max_margin (how far behind the game the image may
+  be shown; 6 ms on Switch, automatic elsewhere; 0 = automatic as in 1.3).
 
 CHANGES IN VERSION 13 (v1.3.1 public release numbering)
 --------------------------------------------------------

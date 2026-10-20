@@ -7,9 +7,15 @@
 #include <algorithm>
 #include <functional>
 #include <chrono>
+#ifdef __linux__
+#include <execinfo.h>
+#include <dlfcn.h>
+#endif
 #include <typeinfo>
 #include <string>
 #include <random>
+#include <chrono>
+namespace fl { extern bool g_rngSeedFixed; }
 
 namespace fl {
 
@@ -485,17 +491,80 @@ bool strictEq(const Value& a, const Value& b) {
     }
 }
 
-static std::mt19937 g_rng(0x15aac);
-double randomDouble() { return (g_rng() >> 5) * (1.0 / 134217728.0); }
+// Flash Player's random number generator (avmplus MathUtils.cpp, as Ruffle ports it in avm_rng.rs): Math.random()
+// returns n / 2^31 for a 31-bit n, random(max) n % max. Seeded on first use from the clock, or from ISAAC_AVMRNG
+// (tests: headless runs use a fixed seed so they are deterministic; the differential tests against Ruffle use the same
+// seed on both sides).
+static uint32_t g_rngU = 0;
+uint64_t g_rngCalls = 0;
+static void rngTrace(const char* what) {   // (testing) ISAAC_RNGTRACE: who asks for random numbers (addresses for addr2line)
+    static int on = -1; if (on < 0) on = getenv("ISAAC_RNGTRACE") != nullptr;
+    if (!on) return;
+#ifdef __linux__
+    void* bt[8]; int n = backtrace(bt, 8);
+    fprintf(stderr, "[rngcall] %llu %s", (unsigned long long)g_rngCalls, what);
+    for (int i = 2; i < n; i++) { Dl_info di; if (dladdr(bt[i], &di) && di.dli_fbase) fprintf(stderr, " 0x%lx", (unsigned long)((char*)bt[i] - (char*)di.dli_fbase)); }
+    fprintf(stderr, "\n");
+#endif
+}
+static int32_t avmRandom() {
+    g_rngCalls++;
+    if (g_rngU == 0) {
+        const char* e = getenv("ISAAC_AVMRNG");
+        g_rngU = e ? (uint32_t)strtoul(e, nullptr, 10) : (g_rngSeedFixed ? 0x15aacu : (uint32_t)std::chrono::steady_clock::now().time_since_epoch().count());
+        if (g_rngU == 0) g_rngU = 1;
+    }
+    // RandomFastNext
+    if (g_rngU & 1) g_rngU = (g_rngU >> 1) ^ 0x48000000u; else g_rngU >>= 1;
+    int32_t n = (int32_t)g_rngU;
+    n = (int32_t)((uint32_t)n * 71u);
+    // RandomPureHasher
+    int32_t seed = n;
+    seed = (int32_t)((((uint32_t)seed << 13) ^ (uint32_t)seed) - (uint32_t)(seed >> 21));
+    int32_t r = (int32_t)((uint32_t)seed * (uint32_t)seed);
+    r = (int32_t)((uint32_t)r * 15731u);
+    r = (int32_t)((uint32_t)r + 789221u);
+    r = (int32_t)((uint32_t)r * (uint32_t)seed);
+    r = (int32_t)((uint32_t)r + 1376312589u);
+    r &= 0x7FFFFFFF;
+    r = (int32_t)((uint32_t)r + (uint32_t)seed);
+    r = (int32_t)((((uint32_t)r << 13) ^ (uint32_t)r) - (uint32_t)(r >> 21));
+    return r & 0x7FFFFFFF;
+}
+bool g_rngSeedFixed = false;
+double randomDouble() { rngTrace("Math.random"); return (double)avmRandom() / 2147483648.0; }
 Value randomNumber(const Value& maxv) {
-    int32_t m = toInt32(maxv);   // coerces to f64 and truncates (as i32)
-    double d = toNum(maxv); if (!std::isfinite(d)) m = 0; else m = (int32_t)d;
+    double d = toNum(maxv);
+    int32_t m = std::isfinite(d) ? (int32_t)d : 0;
     if (m <= 0) return Value(0.0);
-    return Value((double)(g_rng() % (uint32_t)m));
+    if (getenv("ISAAC_RNGTRACE")) { char w[32]; snprintf(w, sizeof w, "random(%d)", m); rngTrace(w); }
+    return Value((double)(avmRandom() % m));
 }
 Value getTime() { return Value(std::floor(g_player.timeMs)); }
 
 // ============================================================ Properties
+// Array element insertion order, for for-in (see Array::ord). Called before el[i] (a hole) gets a value.
+void arrNoteInsert(Array* a, size_t i) {
+    if (a->customOrd) { a->ord.push_back((uint32_t)i); return; }
+    for (size_t j = a->el.size(); j-- > i + 1;) {
+        if (a->el[j].t != T_HOLE) {   // added below an existing element: switch to an explicit order
+            a->customOrd = true; a->ord.clear();
+            for (size_t k = 0; k < a->el.size(); k++) if (a->el[k].t != T_HOLE) a->ord.push_back((uint32_t)k);
+            a->ord.push_back((uint32_t)i);
+            return;
+        }
+    }
+}
+// after el shrank (length / pop): drop the removed indices
+void arrTruncOrder(Array* a) {
+    if (!a->customOrd) return;
+    size_t n = a->el.size(), w = 0;
+    for (size_t r = 0; r < a->ord.size(); r++) if (a->ord[r] < n) a->ord[w++] = a->ord[r];
+    a->ord.resize(w);
+}
+// el was rebuilt (shift, unshift, splice, sort, reverse...): back to index order
+void arrResetOrder(Array* a) { a->customOrd = false; a->ord.clear(); }
+
 static inline bool isRemovedDO(Object* o) { return o->isDisplay() && ((DisplayObject*)o)->removed; }
 
 Value getProp(Object* o, Str* k) {
@@ -555,8 +624,9 @@ void setProp(Object* o, Str* k, const Value& v) {
             Array* a = (Array*)o;
             if (k->arrIdx >= 0) {
                 size_t i = (size_t)k->arrIdx;
-                if (i >= a->el.size()) { if (i > 50000000) return; a->el.resize(i + 1, Value()); for (size_t j = a->el.size() - 1; j > i; j--) {} }
+                if (i >= a->el.size()) { if (i > 50000000) return; size_t old = a->el.size(); a->el.resize(i + 1); for (size_t j = old; j < i; j++) a->el[j].t = T_HOLE; a->el[i].t = T_HOLE; }
                 // new gaps are left as T_HOLE
+                if (a->el[i].t == T_HOLE) arrNoteInsert(a, i);
                 a->el[i] = v.t == T_HOLE ? VUNDEF : v;
                 return;
             }
@@ -564,6 +634,7 @@ void setProp(Object* o, Str* k, const Value& v) {
                 double n = toNum(v); int32_t len = toInt32(n); if (len < 0) len = 0;
                 size_t old = a->el.size(); a->el.resize((size_t)len);
                 for (size_t j = old; j < (size_t)len; j++) a->el[j].t = T_HOLE;
+                if ((size_t)len < old) arrTruncOrder(a);
                 return;
             }
             break;
@@ -626,8 +697,9 @@ void setMem(const Value& obj, const Value& key, const Value& v) {
         Array* a = (Array*)obj.o; double n = key.n;
         if (n >= 0 && n == (int64_t)n && n < 50000000) {
             size_t i = (size_t)n;
-            if (i >= a->el.size()) { size_t old = a->el.size(); a->el.resize(i + 1); for (size_t j = old; j < i; j++) a->el[j].t = T_HOLE; }
-            a->el[i] = v; return;
+            if (i >= a->el.size()) { size_t old = a->el.size(); a->el.resize(i + 1); for (size_t j = old; j < i; j++) a->el[j].t = T_HOLE; a->el[i].t = T_HOLE; }
+            if (a->el[i].t == T_HOLE) arrNoteInsert(a, i);
+            a->el[i] = v.t == T_HOLE ? VUNDEF : v; return;
         }
     }
     setProp(obj.o, keyOf(key), v);
@@ -813,14 +885,18 @@ void defLocal2(Act& a, const Value& name) {
 }
 void traceValue_(const Value& v) { logf("[trace] %s\n", toStr(v)->s.c_str()); }
 
-static void collectKeys(Object* o, std::vector<Str*>& keys, int depth) {
+void collectKeys(Object* o, std::vector<Str*>& keys, int depth) {
     if (!o || depth > 32) return;
     std::vector<Str*> protoKeys;
     if (o->proto) collectKeys(o->proto, protoKeys, depth + 1);
     for (Str* k : protoKeys) if (o->props.find(k) < 0) keys.push_back(k);
     if (o->kind == OK_ARRAY) {
         Array* a = (Array*)o;
-        for (size_t i = a->el.size(); i-- > 0;) if (a->el[i].t != T_HOLE) keys.push_back(keyOf(Value((double)i)));
+        if (a->customOrd) {
+            for (size_t r = a->ord.size(); r-- > 0;) { uint32_t i = a->ord[r]; if (i < a->el.size() && a->el[i].t != T_HOLE) keys.push_back(keyOf(Value((double)i))); }
+        } else {
+            for (size_t i = a->el.size(); i-- > 0;) if (a->el[i].t != T_HOLE) keys.push_back(keyOf(Value((double)i)));
+        }
     }
     for (size_t i = o->props.v.size(); i-- > 0;) {
         const Prop& p = o->props.v[i];
