@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 project(IsaacWotL C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Floating point as Flash computes it: no fused multiply-add. ARM compilers (Switch, Android) contract a*b+c into one
+# fma by default, which changes the last bit of the game's physics; x86 builds don't use fma either way.
+add_compile_options($<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-ffp-contract=off> $<$<COMPILE_LANG_AND_ID:C,GNU,Clang>:-ffp-contract=off>)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -144,7 +147,7 @@ elseif(NINTENDO_SWITCH)
   # .elf -> .nro (icon + hbmenu metadata)
   set(APP_TITLE "The Binding of Isaac")
   set(APP_AUTHOR "whylurking")
-  set(APP_VERSION "1.3.1")
+  set(APP_VERSION "1.4.0")
   add_custom_command(TARGET isaac POST_BUILD
     COMMAND ${DEVKITPRO}/tools/bin/nacptool --create "${APP_TITLE}" "${APP_AUTHOR}" "${APP_VERSION}" isaac.nacp
     COMMAND ${DEVKITPRO}/tools/bin/elf2nro $<TARGET_FILE:isaac> isaac.nro --icon=${CMAKE_SOURCE_DIR}/switch/icon.jpg --nacp=isaac.nacp

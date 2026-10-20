@@ -3,6 +3,7 @@
 #include "core.h"
 #include "swfdata.h"
 #include <deque>
+#include <array>
 #include <atomic>
 
 namespace fl {
@@ -19,7 +20,10 @@ struct DisplayObject : Object {
     uint16_t charId = 0;
     Str* name = nullptr;
     Mat m;                                  // local matrix (px)
-    double sx = 1, sy = 1, rotX = 0, rotY = 0;   // cached decomposition (rotation in radians)
+    // _xscale/_yscale (percent), _rotation (degrees) and skew (radians) as Ruffle keeps them: the values last set by
+    // script are returned as they were set; after a matrix change they are derived from it on demand
+    double sxP = 100, syP = 100, rotD = 0, skew = 0;
+    bool srCached = true;
     CX cx;
     bool visible = true, scriptXform = false, scriptColor = false, removed = false, placedByScript = false, timelinePlaced = false;
     int clipDepth = 0;
@@ -30,7 +34,10 @@ struct DisplayObject : Object {
     Str* path = nullptr;         // path cached on removal (dead references)
 
     void setMatrix(const Mat& mm);
-    void compose();
+    void cacheSR();
+    void setRotation(double deg);
+    void setScaleX(double pct);
+    void setScaleY(double pct);
     void trace(Tracer& tr) override;
 };
 
@@ -60,7 +67,6 @@ struct ButtonObj final : DisplayObject {
 struct MovieClip final : DisplayObject {
     SpriteDef* def = nullptr;
     int cur = 0;                 // current frame (1-based; 0 = uninitialized)
-    uint32_t holdTick = 0;       // (patches.cpp, slowed enemies) _currentframe reads cur + 0.5 during this tick (+1)
     bool playing = true, initialized = false, inExec = false;
     std::vector<DisplayObject*> kids;          // sorted by depth
     std::unordered_map<Str*, DisplayObject*> byName;
@@ -169,7 +175,8 @@ Str* targetPath(DisplayObject* d);
 void fscommand(const std::string& cmd, const std::string& arg);
 
 // Sound (audio.cpp)
-int soundStart(SoundDef* s, double offsetSec, int loops, Object* owner, float vol, float pan);
+int soundStart(SoundDef* s, double offsetSec, int loops, Object* owner, float vol, float pan,
+               const std::vector<std::array<uint32_t, 3>>* envelope = nullptr);   // envelope: SoundInfo points (44.1 kHz pos, l, r)
 void soundStopOwner(Object* owner);
 void soundStopAll();
 void soundStopChan(int ch);

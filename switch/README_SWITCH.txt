@@ -1,4 +1,4 @@
-THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.3.1
+THE BINDING OF ISAAC — native port for Nintendo Switch (homebrew) — version 1.4.0
 =================================================================================
 
 All three versions of the Flash game on Steam are supported: the original, Wrath of the
@@ -102,17 +102,22 @@ FILES IN sd:/switch/isaac/
 --------------------------
   isaac.nro             the program
   Isaac*.exe            the Steam game (you provide it; one per version)
-  isaac_save.sol        the Wrath of the Lamb save (isaac_og_save.sol for the original,
-                        isaac_eternal_save.sol for Eternal Edition). Same format as on
-                        PC: they can be copied between PC and Switch.
   isaac.ini             settings (volume, smooth = 0 for the original 30 fps,
                         game = og/wotl/eternal, low_latency, touch_controls,
-                        joystick_acceleration...)
+                        joystick_acceleration, gc_after_tick, max_margin...)
   log.txt               program messages from the last session
-  performance.txt       performance data (only if you turned on L3 + R3)
-  preload*.txt          graphics seen on this console that weren't in the included list
-                        (preloaded next time; safe to delete). Old precarga*.txt files
-                        are merged in automatically.
+  saves/                your progress and the files the game learns on this console:
+    isaac_save.sol        the Wrath of the Lamb save (isaac_og_save.sol for the original,
+                          isaac_eternal_save.sol for Eternal Edition). Same format as on
+                          PC: they can be copied between PC and Switch.
+    performance.txt       performance data (only if you turned on L3 + R3)
+    preload*.txt          graphics seen on this console that weren't in the included list
+                          (preloaded next time; safe to delete)
+  tools/                save_converter.html: converts saves from the Flash game (open it
+                        on a PC or phone browser), as in the PC version
+Up to version 1.3.1 the saves were directly in sd:/switch/isaac/. Version 1.4.0 copies
+them into saves/ the first time it starts; the old files are left where they were (you
+can delete them once you've checked your progress is there).
 
 IF SOMETHING GOES WRONG
 -----------------------
@@ -120,7 +125,7 @@ IF SOMETHING GOES WRONG
   is missing or isn't the Steam v1.48 version. Press + to exit.
 - If it crashes, goes black or runs slowly, send me:
     sd:/switch/isaac/log.txt
-    sd:/switch/isaac/performance.txt   (play for a while with L3 + R3 turned on)
+    sd:/switch/isaac/saves/performance.txt   (play for a while with L3 + R3 turned on)
   and tell me whether you opened it in application mode (holding R) or from the Album,
   and whether the console was docked or handheld.
 - If Atmosphère shows an error report (crash report), the file in

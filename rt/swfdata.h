@@ -1,5 +1,6 @@
 // Character definitions read from the SWF (shapes, sprites, buttons, bitmaps, sounds, fonts, text).
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -72,11 +73,15 @@ struct ShapeLayer {
 };
 struct ShapeDef;
 const std::vector<std::vector<float>>& shapeHitPolys(ShapeDef* s);
+// the SWF edge records in twips, for exact hit tests (Ruffle shape_utils::shape_hit_test). kind 0 line, 1 curve,
+// 2 new style layer; f0/f1 = the edge has fill style 0 / 1; stroke = line width in twips (-1: none)
+struct HitEdge { int32_t x0, y0, cx, cy, x1, y1; uint8_t kind; bool f0, f1; int32_t stroke; };
 struct ShapeDef : CharDef {
     RectF bounds;
     std::vector<ShapeLayer> layers;
     std::vector<std::vector<float>> hitPolys;   // flattened polygons (for hitTest), per fill; see shapeHitPolys
     bool hitBuilt = false;
+    std::vector<HitEdge> hitEdges;
 };
 
 // ---- Morph: paired edges
@@ -125,6 +130,7 @@ struct FrameCmd {
     int place = -1;                // index into SpriteDef::places
     FrameScript script = nullptr;  // ACTION
     uint16_t soundId = 0; uint8_t soundFlags = 0; uint32_t loops = 1, inPoint = 0, outPoint = 0;  // SOUND
+    std::vector<std::array<uint32_t, 3>> envelope;   // SOUND: SoundInfo envelope (position at 44.1 kHz, left, right 0..32768)
 };
 struct StreamInfo {
     std::vector<uint8_t> mp3;            // all blocks concatenated

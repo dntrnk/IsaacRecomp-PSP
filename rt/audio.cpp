@@ -5,6 +5,8 @@
 #include <functional>
 #include <algorithm>
 #include <mutex>
+#include <atomic>
+#include <array>
 #include <string>
 #include <cctype>
 #define DR_MP3_IMPLEMENTATION
@@ -17,19 +19,30 @@ extern float g_masterVolume;
 float g_audioVolume = 1.0f;   // global volume from the settings
 
 static const int kRate = 44100;
-static int g_rate = kRate;   // output rate: the device's own (Android: usually 48 kHz), 44.1 kHz in tests
+static int g_rate = kRate;   // output rate: the device's own (Android, Switch: 48 kHz), 44.1 kHz in tests
+struct EnvPt { uint32_t at; float l, r; };   // SoundInfo envelope point, position in output frames
 struct Chan {
-    bool active = false;
-    drmp3 dec; bool decOk = false;
+    // Threads: the logic thread starts / stops channels and owns owner, def, stream, gen, srcRate, startFrame, skip,
+    // music; the mixer (audio callback) owns the decoder and the buffers while it mixes. `m` is held only around one
+    // channel's work (mixing it, or starting / stopping / seeking it), so the game never waits for the whole mix; the
+    // state the game reads every tick (active, decOk, published position) is atomic and read without waiting.
+    std::mutex m;
+    std::atomic<bool> active{false};
+    std::atomic<bool> decOk{false};
+    drmp3 dec;
     SoundDef* def = nullptr; StreamInfo* stream = nullptr;
     Object* owner = nullptr;
+    bool music = false;             // never taken over for another sound (loops, streams, long sounds: music)
     int loops = 1; uint64_t startFrame = 0; uint64_t skip = 0;
-    float vol = 1, pan = 0;
+    std::atomic<float> vol{1}, pan{0};
     int srcRate = kRate, srcCh = 1;
     double pos = 0;                 // fractional position in the source buffer
     bool eof = false;               // no more source data: play out what is left in buf
     float buf[2][4096]; int bufLen = 0; int bufBase = 0;   // decoded samples (per channel)
     uint64_t framesConsumed = 0;    // source frames consumed since startFrame (for position)
+    std::atomic<double> posPub{0};  // (published by the mixer) source frames played since startFrame
+    std::atomic<double> curPub{0};  // (published by the mixer) absolute source frame being played (streams)
+    std::vector<EnvPt> env; size_t envNext = 0; EnvPt envPrev{0, 1, 1}, envNextPt{0, 1, 1}; uint32_t envCur = 0;
     int gen = 0;
 };
 static Chan g_chans[48];
@@ -37,16 +50,41 @@ static SDL_AudioDeviceID g_dev = 0;
 static int g_genCounter = 0;
 
 static std::recursive_mutex g_devMu;   // g_dev can be reopened by the main thread (output device changes)
-void audioLock() { g_devMu.lock(); if (g_dev) SDL_LockAudioDevice(g_dev); }
-void audioUnlock() { if (g_dev) SDL_UnlockAudioDevice(g_dev); g_devMu.unlock(); }
+void audioLock() { g_devMu.lock(); }
+void audioUnlock() { g_devMu.unlock(); }
 
+// (channel locked)
 static bool chanSeek(Chan& c, uint64_t frame) {
     if (!c.decOk) return false;
     bool ok = drmp3_seek_to_pcm_frame(&c.dec, frame) != 0;
     c.bufLen = 0; c.pos = 0; c.eof = false; c.framesConsumed = frame >= c.startFrame ? frame - c.startFrame : 0;
+    c.posPub = (double)c.framesConsumed; c.curPub = (double)frame;
     return ok;
 }
-static void chanFree(Chan& c) { if (c.decOk) drmp3_uninit(&c.dec); c.decOk = false; c.active = false; c.owner = nullptr; c.def = nullptr; c.stream = nullptr; }
+static void chanFree(Chan& c) { if (c.decOk) drmp3_uninit(&c.dec); c.decOk = false; c.active = false; c.owner = nullptr; c.def = nullptr; c.stream = nullptr; c.env.clear(); }
+
+// envelope (Ruffle's EnvelopeSignal): linear between points, counted in output frames from the start
+static void envStart(Chan& c, const std::vector<std::array<uint32_t, 3>>* env) {
+    c.env.clear(); c.envNext = 0; c.envCur = 0;
+    if (!env || env->empty()) return;
+    double sc = (double)g_rate / 44100.0;
+    for (auto& p : *env) c.env.push_back({(uint32_t)(p[0] * sc), p[1] / 32768.f, p[2] / 32768.f});
+    c.envNextPt = c.env[0]; c.envNext = 1;
+    c.envPrev = {0, c.envNextPt.l, c.envNextPt.r};
+}
+static inline void envStep(Chan& c, float& l, float& r) {
+    if (c.envPrev.at < c.envNextPt.at) {
+        float t = (float)(c.envCur - c.envPrev.at) / (float)(c.envNextPt.at - c.envPrev.at);
+        l = c.envPrev.l + (c.envNextPt.l - c.envPrev.l) * t; r = c.envPrev.r + (c.envNextPt.r - c.envPrev.r) * t;
+    } else { l = c.envNextPt.l; r = c.envNextPt.r; }
+    if (c.envCur < 0xFFFFFFFFu) c.envCur++;
+    while (c.envCur > c.envNextPt.at) {
+        c.envPrev = c.envNextPt;
+        if (c.envNext < c.env.size()) c.envNextPt = c.env[c.envNext++];
+        else c.envNextPt = {0xFFFFFFFFu, c.envPrev.l, c.envPrev.r};
+        if (c.envPrev.at > c.envNextPt.at) c.envNextPt.at = c.envPrev.at;
+    }
+}
 
 // refills the source buffer; returns false at the end of the sound (no more loops)
 static bool refill(Chan& c) {
@@ -75,9 +113,14 @@ static void mix(void*, Uint8* stream, int len) {
     std::fill(out, out + frames * 2, 0.f);
     float master = g_masterVolume * g_audioVolume;
     for (auto& c : g_chans) {
+        if (!c.active.load(std::memory_order_acquire)) continue;
+        std::lock_guard<std::mutex> lk(c.m);
         if (!c.active) continue;
         double step = (double)c.srcRate / g_rate;
-        float lv = c.vol * master * (c.pan > 0 ? 1 - c.pan : 1), rv = c.vol * master * (c.pan < 0 ? 1 + c.pan : 1);
+        float vol = c.vol.load(std::memory_order_relaxed), pan = c.pan.load(std::memory_order_relaxed);
+        float lv = vol * master * (pan > 0 ? 1 - pan : 1), rv = vol * master * (pan < 0 ? 1 + pan : 1);
+        bool hasEnv = !c.env.empty();
+        bool ended = false;
         for (int i = 0; i < frames; i++) {
             // keep 3 samples of history across refills: the cubic interpolation reads one before and two after
             while (!c.eof && c.pos >= c.bufLen - 2) {
@@ -92,7 +135,7 @@ static void mix(void*, Uint8* stream, int len) {
                 c.bufLen += k;
                 c.pos -= oldLen - k;
             }
-            if (c.eof && c.pos >= c.bufLen - 1) { c.active = false; break; }
+            if (c.eof && c.pos >= c.bufLen - 1) { ended = true; break; }
             int ip = (int)c.pos; float t = (float)(c.pos - ip);
             int im = ip > 0 ? ip - 1 : 0, i2 = std::min(ip + 2, c.bufLen - 1);
             // Catmull-Rom (cubic Hermite): noticeably cleaner than linear when 11/22 kHz sounds are upsampled
@@ -101,10 +144,13 @@ static void mix(void*, Uint8* stream, int len) {
             };
             float l = cr(c.buf[0][im], c.buf[0][ip], c.buf[0][ip + 1], c.buf[0][i2]);
             float r = cr(c.buf[1][im], c.buf[1][ip], c.buf[1][ip + 1], c.buf[1][i2]);
+            if (hasEnv) { float el, er; envStep(c, el, er); l *= el; r *= er; }
             out[i * 2] += l * lv; out[i * 2 + 1] += r * rv;
             c.pos += step;
         }
-        if (!c.active) { if (c.decOk) drmp3_uninit(&c.dec); c.decOk = false; }
+        c.posPub.store((double)c.framesConsumed + c.pos, std::memory_order_relaxed);
+        if (c.decOk) c.curPub.store((double)c.dec.currentPCMFrame - c.bufLen + c.pos, std::memory_order_relaxed);
+        if (ended) { if (c.decOk) drmp3_uninit(&c.dec); c.decOk = false; c.active.store(false, std::memory_order_release); }
     }
     for (int i = 0; i < frames * 2; i++) out[i] = std::max(-1.f, std::min(1.f, out[i]));
 }
@@ -149,7 +195,7 @@ static std::string bestNonController() {
 static bool openDevice(const std::string& name) {
     SDL_AudioSpec want{}, have{};
     // mix directly at the device's rate (one resampling step instead of ours + SDL's conversion)
-    want.freq = kIsAndroid ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = kIsAndroid ? 512 : 1024; want.callback = mix;   // (Android: ~11 ms)
+    want.freq = (kIsAndroid || kIsSwitch) ? 48000 : kRate; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = kIsAndroid ? 512 : 1024; want.callback = mix;   // (Android: ~11 ms)
     SDL_AudioDeviceID d = SDL_OpenAudioDevice(name.empty() ? nullptr : name.c_str(), 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (!d) { logf("audio: %s: %s\n", name.empty() ? "default device" : name.c_str(), SDL_GetError()); return false; }
     if (have.freq >= 8000 && have.freq <= 192000) g_rate = have.freq;
@@ -160,7 +206,7 @@ static bool openDevice(const std::string& name) {
     return true;
 }
 void audioInit(bool device) {
-    if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active) tr.mark(c.owner); }); return; }
+    if (!device) { g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active || c.decOk) tr.mark(c.owner); }); return; }
     std::string def = (kIsAndroid || kIsSwitch) ? std::string() : defaultOutputName();
     if (!def.empty() && isControllerAudio(def)) {
         std::string other = bestNonController();
@@ -168,7 +214,7 @@ void audioInit(bool device) {
         if (!other.empty()) def = other;
     }
     if (def.empty() || !openDevice(def)) openDevice(std::string());
-    g_rootTracers.push_back([](Tracer& tr) { audioLock(); for (auto& c : g_chans) if (c.active) tr.mark(c.owner); audioUnlock(); });
+    g_rootTracers.push_back([](Tracer& tr) { for (auto& c : g_chans) if (c.active || c.decOk) tr.mark(c.owner); });
 }
 // main thread: an audio device was added or removed (the system's default is checked a little later: it changes
 // asynchronously)
@@ -193,86 +239,94 @@ void audioDeviceTick(double now) {
     }
 }
 
+// a free channel, returned locked. All in use: the oldest one that isn't music is taken over; if every channel is
+// playing music (or a loop), the new sound is not played (as Flash does past its channel limit).
 static Chan* allocChan() {
-    for (auto& c : g_chans) if (!c.active) { if (c.decOk) { drmp3_uninit(&c.dec); c.decOk = false; } return &c; }
-    // steal the oldest channel
-    Chan* best = &g_chans[0];
-    for (auto& c : g_chans) if (c.gen < best->gen) best = &c;
-    chanFree(*best); return best;
+    for (auto& c : g_chans) {
+        if (c.active.load(std::memory_order_acquire)) continue;
+        c.m.lock();
+        if (!c.active) { if (c.decOk) { drmp3_uninit(&c.dec); c.decOk = false; } return &c; }
+        c.m.unlock();
+    }
+    Chan* best = nullptr;
+    for (auto& c : g_chans) if (!c.music && (!best || c.gen < best->gen)) best = &c;
+    if (!best) return nullptr;
+    best->m.lock(); chanFree(*best); return best;
 }
 
-int soundStart(SoundDef* s, double offsetSec, int loops, Object* owner, float vol, float pan) {
+int soundStart(SoundDef* s, double offsetSec, int loops, Object* owner, float vol, float pan, const std::vector<std::array<uint32_t, 3>>* env) {
     if (!s || s->format != 2 || !s->size) return -1;
-    audioLock();
     Chan* c = allocChan();
+    if (!c) return -1;
     c->decOk = drmp3_init_memory(&c->dec, s->data, s->size, nullptr) != 0;
-    if (!c->decOk) { audioUnlock(); return -1; }
+    if (!c->decOk) { c->m.unlock(); return -1; }
     c->def = s; c->stream = nullptr; c->owner = owner; c->loops = std::max(1, loops); c->vol = vol; c->pan = pan;
     c->srcRate = (int)c->dec.sampleRate; c->srcCh = (int)c->dec.channels;
+    static const double kRates[4] = {5512.5, 11025, 22050, 44100};
+    c->music = c->loops > 1 || s->samples / kRates[s->rate & 3] > 10.0;
     c->skip = s->seek > 0 ? (uint64_t)s->seek : 0;
     c->startFrame = c->skip + (uint64_t)std::max(0.0, offsetSec * c->srcRate);
     if (c->startFrame) chanSeek(*c, c->startFrame);
-    c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0;
-    c->active = true; c->gen = ++g_genCounter;
+    c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0; c->posPub = 0; c->curPub = (double)c->startFrame;
+    envStart(*c, env);
+    c->gen = ++g_genCounter;
+    c->active.store(true, std::memory_order_release);
     int idx = (int)(c - g_chans);
-    audioUnlock();
+    c->m.unlock();
     return idx;
 }
 
 int streamStart(StreamInfo* st, int frame0, Object* owner) {
     if (!st || st->mp3.empty()) return -1;
-    audioLock();
     Chan* c = allocChan();
+    if (!c) return -1;
     c->decOk = drmp3_init_memory(&c->dec, st->mp3.data(), st->mp3.size(), nullptr) != 0;
-    if (!c->decOk) { audioUnlock(); return -1; }
-    c->def = nullptr; c->stream = st; c->owner = owner; c->loops = 1; c->vol = 1; c->pan = 0;
+    if (!c->decOk) { c->m.unlock(); return -1; }
+    c->def = nullptr; c->stream = st; c->owner = owner; c->loops = 1; c->vol = 1; c->pan = 0; c->music = true;
     c->srcRate = (int)c->dec.sampleRate; c->srcCh = (int)c->dec.channels; c->skip = 0;
-    c->startFrame = 0;
+    c->startFrame = 0; c->env.clear();
     uint64_t target = frame0 < (int)st->frameSample.size() ? st->frameSample[frame0] : 0;
-    if (target) chanSeek(*c, target); else { c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0; }
-    c->active = true; c->gen = ++g_genCounter;
+    if (target) chanSeek(*c, target); else { c->bufLen = 0; c->pos = 0; c->eof = false; c->framesConsumed = 0; c->posPub = 0; c->curPub = 0; }
+    c->gen = ++g_genCounter;
+    c->active.store(true, std::memory_order_release);
     int idx = (int)(c - g_chans);
-    audioUnlock();
+    c->m.unlock();
     return idx;
 }
 
 void streamSync(int ch, StreamInfo* st, int frame0) {
     if (ch < 0 || ch >= 48) return;
-    audioLock();
     Chan& c = g_chans[ch];
-    if (c.active && c.decOk && c.stream == st && frame0 < (int)st->frameSample.size()) {
-        // actual playback position: the decoder is at currentPCMFrame and the buffer holds the previous bufLen
-        // frames (buf[k] = currentPCMFrame - bufLen + k). (A counter used to be used instead, but it drifted:
-        // it resynced on almost every tick, and resyncing backwards decodes the MP3 from the start:
-        // up to ~20 ms per tick on PC and much more on Switch.)
-        double cur = (double)c.dec.currentPCMFrame - c.bufLen + c.pos;
-        double want = st->frameSample[frame0];
-        if (std::fabs(cur - want) > c.srcRate * 0.2) {
-            static bool dbg = getenv("ISAAC_STREAMDBG") != nullptr;
-            if (dbg) fprintf(stderr, "[stream] seek frame0=%d cur=%.0f want=%.0f rate=%d buf=%d pos=%.1f\n", frame0, cur, want, c.srcRate, c.bufLen, c.pos);
-            chanSeek(c, (uint64_t)want);
-        }
+    if (!c.active || c.stream != st || frame0 >= (int)st->frameSample.size()) return;
+    // actual playback position (published by the mixer: the decoder's frame minus what is still buffered). (A counter
+    // used to be used instead, but it drifted: it resynced on almost every tick, and resyncing backwards decodes the
+    // MP3 from the start: up to ~20 ms per tick on PC and much more on Switch.)
+    double cur = c.curPub.load(std::memory_order_relaxed);
+    double want = st->frameSample[frame0];
+    if (std::fabs(cur - want) > c.srcRate * 0.2) {
+        static bool dbg = getenv("ISAAC_STREAMDBG") != nullptr;
+        if (dbg) fprintf(stderr, "[stream] seek frame0=%d cur=%.0f want=%.0f rate=%d\n", frame0, cur, want, c.srcRate);
+        std::lock_guard<std::mutex> lk(c.m);
+        if (c.active && c.decOk && c.stream == st) chanSeek(c, (uint64_t)want);
     }
-    audioUnlock();
 }
 
-bool chanAlive(int ch) { if (ch < 0 || ch >= 48) return false; audioLock(); bool a = g_chans[ch].active; audioUnlock(); return a; }
-void soundStopChan(int ch) { if (ch < 0 || ch >= 48) return; audioLock(); chanFree(g_chans[ch]); audioUnlock(); }
-void soundStopOwner(Object* owner) { audioLock(); for (auto& c : g_chans) if (c.active && c.owner == owner) chanFree(c); audioUnlock(); }
-void soundStopAll() { audioLock(); for (auto& c : g_chans) if (c.active) chanFree(c); audioUnlock(); }
-void soundStopDef(SoundDef* s) { audioLock(); for (auto& c : g_chans) if (c.active && c.def == s) chanFree(c); audioUnlock(); }
-bool soundPlayingDef(SoundDef* s) { audioLock(); bool r = false; for (auto& c : g_chans) if (c.active && c.def == s) r = true; audioUnlock(); return r; }
+bool chanAlive(int ch) { if (ch < 0 || ch >= 48) return false; return g_chans[ch].active.load(std::memory_order_acquire); }
+static void chanStop(Chan& c) { std::lock_guard<std::mutex> lk(c.m); chanFree(c); }
+void soundStopChan(int ch) { if (ch < 0 || ch >= 48) return; chanStop(g_chans[ch]); }
+void soundStopOwner(Object* owner) { for (auto& c : g_chans) if (c.owner == owner && (c.active || c.decOk)) chanStop(c); }
+void soundStopAll() { for (auto& c : g_chans) if (c.active || c.decOk) chanStop(c); }
+void soundStopDef(SoundDef* s) { for (auto& c : g_chans) if (c.def == s && c.active) chanStop(c); }
+bool soundPlayingDef(SoundDef* s) { for (auto& c : g_chans) if (c.active && c.def == s) return true; return false; }
 void soundSetVolumeOwner(Object* owner, float vol, float pan) {
-    audioLock(); for (auto& c : g_chans) if (c.active && c.owner == owner) { c.vol = vol; c.pan = pan; } audioUnlock();
+    for (auto& c : g_chans) if (c.active && c.owner == owner) { c.vol.store(vol, std::memory_order_relaxed); c.pan.store(pan, std::memory_order_relaxed); }
 }
 double soundPositionMs(Object* owner, bool* active) {
-    audioLock();
     double r = 0; int best = -1;
     for (auto& c : g_chans) if (c.owner == owner && c.decOk && c.gen > best) {
         best = c.gen;
-        r = ((double)c.framesConsumed + c.pos + (double)(c.startFrame > c.skip ? c.startFrame - c.skip : 0)) * 1000.0 / c.srcRate;
+        r = (c.posPub.load(std::memory_order_relaxed) + (double)(c.startFrame > c.skip ? c.startFrame - c.skip : 0)) * 1000.0 / c.srcRate;
     }
-    audioUnlock();
     if (active) *active = best >= 0;
     return r;
 }
@@ -283,7 +337,10 @@ void audioDumpTick(const char* path) {
     if (!path) {   // (test mode without --wav: still consume 1/30 s per tick, as in real time)
         static double acc = 0; acc += kRate / 30.0; int n = (int)acc; acc -= n;
         std::vector<float> buf(n * 2);
+        static const bool mixMs = getenv("ISAAC_MIXMS") != nullptr;   // (testing) cost of mixing 1/30 s
+        Uint64 t0 = SDL_GetPerformanceCounter();
         audioLock(); mix(nullptr, (Uint8*)buf.data(), n * 2 * sizeof(float)); audioUnlock();
+        if (mixMs) { int act = 0; for (auto& c : g_chans) act += c.active; logf("[mix] %.3f %d\n", (SDL_GetPerformanceCounter() - t0) * 1000.0 / SDL_GetPerformanceFrequency(), act); }
         return;
     }
     if (!g_wav) { g_wav = fopen(path, "wb"); if (!g_wav) return; uint8_t h[44] = {0}; fwrite(h, 1, 44, g_wav); }

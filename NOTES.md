@@ -351,7 +351,7 @@
 - "Rebind controls" label: written with hand-drawn stroke glyphs (`rt/menuui_glyphs.inc`, original artwork; small
   caps like the game's marker labels) as one synthesized line shape, cap height 26 at (74,155) in the options sheet.
   The game's own menu labels are plain shapes (no font to reuse).
-- The Hourglass: slowed enemies advance their animation only on even ticks (`trgnextd` skips `nextFrame` when
+- The Hourglass (removed in v1.4, see below): slowed enemies advance their animation only on even ticks (`trgnextd` skips `nextFrame` when
   `trg.free && slow > 0 && !fra2`), while attacks fire on `trg.d.d._currentframe == N`, so each attack frame was seen
   on two ticks. `trgnextd` is wrapped natively: on a held tick the clip gets `holdTick`, and `_currentframe` reads
   N + 0.5 for the rest of that tick (equality and end-of-animation checks fail, range checks still pass).
@@ -394,3 +394,105 @@
   speakers / headphones in several languages first; HDMI, digital and virtual outputs last).
 - Touch bomb target: `hud.cacher` exists only in Eternal; the original and WotL have the coin/bomb/key icons directly
   in `hud` at the same place, so the target comes from the same HUD-local rect (249.8,11.1)-(279.4,66.3).
+
+## v1.4: differential tests against Ruffle (enemies)
+- `tools/difftest/`: a patched Ruffle (`isaac_harness`) runs the same HD-patched SWF and test script as the recomp,
+  with Flash's random generator seeded identically (`ISAAC_AVMRNG`) and a virtual clock; ball/player/room state is
+  compared tick by tick. Enemy runs: every enemy type of the three games alone in the first room (600 ticks of
+  random input and shooting); room tours: 12 random rooms per floor on every floor, god mode, random input.
+- Random numbers: the recomp now uses Flash Player's generator (avmplus RandomFastNext + RandomPureHasher, as Ruffle):
+  Math.random() = n / 2^31, random(max) = n % max. Seeded from the clock in play, fixed in headless tests.
+- getTimer() in tests: `tick * 1000 / fps` (was `tick * (1/fps) * 1000`, which gave 27599 instead of 27600 and changed
+  the number of random numbers the game burns at the start of each floor).
+- `_x` / `_y`: stored in whole twips truncated toward zero (Flash/Ruffle), not rounded; +-Infinity -> -107374182.4;
+  NaN/undefined/null ignored, Infinity accepted (was rejected).
+- gotoAndStop/gotoAndPlay(frame): only a whole number is a frame number. Anything else (a fractional number too) is
+  converted to a string and resolved as "path:frame" / "path.frame" (right-most ':' or '.'), the frame being a
+  number (Rust f64 syntax) or a label. So `gotoAndStop(567.5)` looks for a clip named "567" and does nothing; the
+  recomp went to frame 567 (clamped to the last one): a WotL boss (type 97) flashed its last sprite frame for a tick
+  when hit. Frame labels are case-insensitive (stored lowercase).
+- hitTest(x, y, true): exact port of Ruffle's shape_hit_test (winding numbers on the SWF edges in twips, one-sided
+  fill edges, even-odd per style layer, strokes hit within half their width, min 1 px on screen) and of its mask
+  handling in clips (children under a mask only hit where the mask does). The flattened polygons (6 segments per
+  curve, strokes ignored) were off by up to ~1 px near curves: on WotL's spider boss (type 100) the web creep caught
+  the player one tick later than in Flash (`shit()` -> `blorz.hitTest`), so movement diverged.
+- Results after the fixes: every enemy type of the three games (72 OG, 90 WotL, 90 Eternal; 600 ticks each) and room
+  tours of every floor (12 rooms x 300 ticks; 40-50 different enemy types met per game) identical to Ruffle, including
+  rotation, scale, alpha, visibility and animation frames. Eternal runs without `mdm` there ("nozinc": _root at
+  125 %), so it uses `tools/difftest/start_eternal.txt` (mouse clicks at that scale).
+- The Hourglass fix (v1.3, `trgnextd` wrapper) was a deviation: Ruffle confirms the original fires twice per attack
+  while slowed. Removed in v1.4 (the original behaviour is kept).
+- Fistula (OG, types 71-73): identical to Ruffle in the empty room and in real rooms. It does not cross pits in the
+  original either: non-flying enemies collide with `mhit()` (any `levz >= 1`, pits are 3); only `flyby` enemies use
+  `mhitx()`, which lets them over pits.
+
+## v1.4: bosses
+- Each boss room template (`_root.levz[_root.bossl]`, b1-0 ... b42-x, horsemen h1-h5, alt bosses a*, demon, satan,
+  krampus...) is played on its floor (`tools/difftest/gen_boss.py`: `newstart` up to the chapter, teleport to the boss
+  room with that template, auto-aim at the nearest enemy (`eval aim 1`, same rule in both harnesses), random movement,
+  god mode) and compared with Ruffle tick by tick until the boss dies.
+- for-in over arrays: Flash (and Ruffle) store array elements as ordinary properties, so `for (z in arr)` returns the
+  elements most recently ADDED first, not by descending index. `levz = new Array(200)` is filled in tile order, and
+  `for (z in levz)` (killing every poop when a boss dies, `killa`) visited the cells in another order: the random
+  numbers went to other cells (WotL b2-0, splash rotations, then everything). `Array::ord` keeps the insertion order
+  once an element is added below an existing one; while arrays only grow upwards the old descending-index order is
+  the same thing. Array setProp also left gaps as `undefined` instead of holes (they were enumerated).
+
+## v1.4: items
+- Each item (OG 1-132, WotL/Eternal 1-198) is put on a pedestal under the player (`create(x, y, 0,0,0,0, 5.1 +
+  item/10000)`), picked up, then three waves of enemies are fought with auto-aim; the active item is charged
+  (`_root.itc = 1`) and used every 90 ticks, bombs are placed (`tools/difftest/gen_item.py`). Pills, cards and trinkets:
+  `5.07 + col * 1e-9` (col 1-6 pills, 7-28 and 70-74 cards, 29-61 trinkets), used with Q.
+- _xscale / _yscale / _rotation: ported Ruffle's transform cache. The values set by script are kept (percent,
+  degrees) and returned exactly; the matrix is rebuilt from them with f32 a..d; after a matrix change (timeline) they
+  are derived from the matrix (atan2 * 180/pi, Rust's to_degrees / to_radians constants). The recomp stored radians
+  and unit scales, so `_rotation` read back with an error in the last bit: Mom's Knife (item 114) turns with
+  `knife.d.z._rotation += f1 * 0.7` and computes its position from it, so it drifted by 1e-12 px per tick until it
+  hit something one tick apart from Flash. `_width` / `_height` setters follow Ruffle too (rotation-aware).
+- The Hourglass (item 66, and Eternal's item 124): identical once the v1.3 slow fix was removed (v1.4: reverted).
+
+## v1.4: physics / HD patch audit
+- Ruffle with the ORIGINAL swf (800x600 stage, _root at 125 %) vs Ruffle with the HD-patched swf (1440x1080, 225 %),
+  same input and seed (`tools/difftest` cmp_scale idea: only the start click differs): OG 72 enemy types (alone and
+  killed), 8 floors of rooms, 132 items (1-66 all, odd ones above); WotL 90 enemy types, 8 floors, odd items 1-99.
+  399 runs, all identical: the HD patch does not change the game (positions, knockback, hit tests...).
+- getTimer() in play is the real time since start (as Flash): the game burns getTimer() % 100 random numbers at the
+  start of each floor (`levz.length <= 1`), and the frame clock (n * 1000 / 30) only gave 0 / 33 / 66. Headless runs
+  keep the frame clock (deterministic, as the Ruffle harness); `ISAAC_FRAMECLOCK=1` forces it in play. setInterval
+  follows the same clock. The AUTO quality code may now see < 30 fps after a slow frame and lower `_quality`, which the
+  renderer ignores.
+- `-ffp-contract=off` for every target: ARM compilers (Switch, Android) contracted a*b+c into fma by default, so the
+  physics differed from PC / Flash in the last bit.
+- Known, not changed: SharedObject saves array holes as undefined (the game only tests them for truthiness); Eternal's
+  HD scale (Zinc path) can't be checked in Ruffle (no mdm), same patch as OG/WotL.
+
+## v1.4: input delay on Switch (performance.txt from a real console)
+- Floor 1: logic ~2.5 ms/tick, display margin ~4.5-5 ms, ~30 extrapolated frames/s. Busy rooms on floors 2-3: logic
+  5-7.5 ms (GC 40-64 ms per second with 16+ entities), margin 8.7-11 ms, 6-15 extrapolated frames/s: ~5-10 ms more
+  input-to-image delay. Render draw ~16.2 ms per frame on every floor (no headroom, but constant).
+- `gc_after_tick` (isaac.ini, default 1): gcCollect runs after the snapshot is published, so it no longer counts in
+  `pubDelay` (the margin follows pubDelay). `max_margin` (ms, default 6 on Switch, 0 = automatic elsewhere) caps the
+  adaptive margin; late ticks are extrapolated (alpha up to 1.35). Both are written into an older isaac.ini with their
+  explanation (`kLateSettings`).
+- Testing aids: `ISAAC_TICKMS=1` (headless: cost of every tick), `ISAAC_MIXMS=1` (headless: cost of mixing 1/30 s).
+- Switch layout (and Android: IsaacRecomp/saves/): saves / preload / performance.txt in sd:/switch/isaac/saves/ (copied from sd:/switch/isaac/ the
+  first time), tools/save_converter.html next to the .nro, as on PC.
+
+## v1.4: sound
+- Mixer locking: the audio callback used to run inside SDL's device lock and the game took the same lock for every
+  Sound call (position / getVolume / setVolume / start / stop): every tick the game asks each playing sound for its
+  position (the `sz` loop), so it waited for the whole mix (MP3 decoding included). Now each channel has its own
+  mutex, held only while that channel is mixed / started / stopped / seeked; what the game reads every tick (active,
+  decoder alive, played position, stream position) is published by the mixer in atomics. Volume / pan are atomics.
+- Timeline sound envelopes (SoundInfo HasEnvelope): parsed and applied like Ruffle's EnvelopeSignal (levels / 32768,
+  linear between points, positions at 44.1 kHz scaled to the output rate, counted from the start). Used by the
+  ending animations (Chest_Drop at ~30 %, "Satan find" at 25-50 %), which played at full volume.
+- Channel limit (48): when all are busy the oldest sound that isn't music (looping, a stream, or longer than 10 s) is
+  replaced; if every channel holds music the new sound is dropped. The music used to be the first one replaced.
+- Switch mixes at 48 kHz (the console's rate) like Android: no second resampling by SDL.
+- Opening a chest that gives a pedestal (or some other outcomes) pushes Isaac away in the original too:
+  `xbew -= dx * (70 - d) / d * 0.4` (up to ~25 px/tick when touching it); identical to Ruffle in 22 runs.
+- Icon: windows/isaac.ico (16-256 px, from the Switch / Android artwork) as resource 1 in windows/isaac.rc (SDL uses the
+  first icon group for the window class); Linux: rt/icon64.inc (64x64 RGBA) with SDL_SetWindowIcon.
+- Android build: core.cpp's ISAAC_RNGTRACE backtrace is Linux-only (`!__ANDROID__`: bionic has no backtrace() before
+  API 33). Syntax check with an empty execinfo.h first in the include path to catch this on PC.

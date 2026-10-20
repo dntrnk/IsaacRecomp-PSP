@@ -1,3 +1,5 @@
-// Windows resources: the application manifest (UTF-8 code page)
+// Windows resources: the program icon (the first icon is also used by SDL for the window) and the application
+// manifest (UTF-8 code page)
 #include <winuser.h>
+1 ICON "isaac.ico"
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "isaac.manifest"

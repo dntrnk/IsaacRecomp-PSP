@@ -30,6 +30,9 @@ static std::vector<SubPath> splitPath(const Path& p) {
 void debugShapeSubpaths(uint16_t id) {
     CharDef* cd = g_movie.get(id); if (!cd || cd->type != CH_SHAPE) return;
     ShapeDef* s = (ShapeDef*)cd;
+    if (getenv("ISAAC_POLYDUMP")) {   // (testing) the hit-test polygons, for analysis
+        for (auto& poly : shapeHitPolys(s)) { std::string o = "[poly]"; for (float v : poly) { char b[32]; snprintf(b, sizeof b, " %g", v); o += b; } logf("%s\n", o.c_str()); }
+    }
     for (size_t l = 0; l < s->layers.size(); l++) for (size_t f = 0; f < s->layers[l].fillPaths.size(); f++)
         for (auto& sp : splitPath(s->layers[l].fillPaths[f]))
             logf("[sub] layer %zu fill %zu  x %.1f..%.1f  y %.1f..%.1f\n", l, f, sp.x0, sp.x1, sp.y0, sp.y1);
@@ -88,39 +91,6 @@ static void installMoveScale() {
     }
     g_dirkeyOrig = (Function*)f.o;
     setMemK(clip, name, Value((Object*)g_dirkeyWrap));
-}
-// The Hourglass (and other "slow" effects): slowed enemies only advance their animation every other tick
-// (trgnextd skips nextFrame on odd ticks), but their attacks fire when the animation IS on a given frame
-// (`if (trg.d.d._currentframe == 38) shoot`), so each attack frame was seen twice: bosses shot double and the
-// Widow spawned twice the spiders. On the tick trgnextd holds the animation, the held clip's _currentframe
-// reads N + 0.5: equality checks and the end-of-animation check fail, range checks (> a && < b) still work.
-static Function* g_nextdOrig = nullptr; static Function* g_nextdWrap = nullptr;
-static Value trgnextdWrap(Act& a, Value thisv, int argc, Value* argv) {
-    Value clip = getMemK(Value((Object*)vm.root), intern("a"));
-    if (clip.isObj()) {
-        static Str* sTrg = intern("trg"); static Str* sFree = intern("free"); static Str* sSlow = intern("slow"); static Str* sFra2 = intern("fra2"); static Str* sD = intern("d");
-        Value trg = getMemK(clip, sTrg);
-        Value slow = getMemK(clip, sSlow);
-        bool skip = trg.isObj() && truthy(getMemK(trg, sFree)) && slow.t == T_NUM && slow.n > 0 && !truthy(getMemK(clip, sFra2));
-        if (skip) {
-            Value t2 = argc > 0 && argv[0].t != T_UNDEF ? argv[0] : getMemK(getMemK(trg, sD), sD);
-            if (t2.isObj() && t2.o->kind == OK_CLIP) ((MovieClip*)t2.o)->holdTick = g_player.tick + 1;
-        }
-    }
-    return g_nextdOrig ? callValue(a, Value((Object*)g_nextdOrig), thisv, argc, argv) : VUNDEF;
-}
-static void installSlowFix() {
-    Value clip = getMemK(Value((Object*)vm.root), intern("a"));
-    if (!clip.isObj()) return;
-    static Str* name = intern("trgnextd");
-    Value f = getMemK(clip, name);
-    if (!f.isObj() || f.o->kind != OK_FUNCTION || f.o == (Object*)g_nextdWrap) return;
-    if (!g_nextdWrap) {
-        g_nextdWrap = gcNew<Function>(); g_nextdWrap->proto = protos::function; g_nextdWrap->nat = trgnextdWrap; g_nextdWrap->dbgName = "trgnextd (slow fix)"; gcPin(g_nextdWrap);
-        gcAddRoot((GcObj**)&g_nextdOrig);
-    }
-    g_nextdOrig = (Function*)f.o;
-    setMemK(clip, name, Value((Object*)g_nextdWrap));
 }
 Value mdmFull(Act&, Value, int argc, Value* argv) {
     // at startup the game applies its saved setting: isaac.ini's takes precedence (and is synced in recompPatchesTick)
@@ -215,7 +185,6 @@ static void tweakOptions(MovieClip* p) {
 void recompPatchesTick() {
     Value root((Object*)vm.root);
     installMoveScale();
-    installSlowFix();
     if (!g_fsSynced && g_player.tick >= 2) {   // the menu's "FullScreen" checkbox reflects the actual state
         Value so = getMemK(root, intern("so"));
         Value data = so.isObj() ? getMemK(so, intern("data")) : VUNDEF;

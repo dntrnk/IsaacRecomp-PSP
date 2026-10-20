@@ -1,0 +1,429 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index a47c3df4..edcb62d4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,5 +1,6 @@
+ [workspace]
+ members = [
++    "isaac_harness",
+     "core",
+     "core/macros",
+     "core/build_playerglobal",
+diff --git a/core/src/avm1/activation.rs b/core/src/avm1/activation.rs
+index d41012e8..e0150fdb 100644
+--- a/core/src/avm1/activation.rs
++++ b/core/src/avm1/activation.rs
+@@ -1255,6 +1255,12 @@ impl<'a, 'gc> Activation<'a, 'gc> {
+             *self.context.time_offset += 1;
+         }
+ 
++        let vms = crate::isaac_harness::VIRTUAL_MS.load(std::sync::atomic::Ordering::Relaxed);
++        if vms >= 0 {
++            if std::env::var("ISAAC_RNGTRACE").is_ok() { eprintln!("[gettime] {} {}", vms, self.id); }
++            self.context.avm1.push((vms as u32).into());
++            return Ok(FrameControl::Continue);
++        }
+         let time = Instant::now()
+             .duration_since(self.context.start_time)
+             .as_millis() as u32;
+@@ -1942,7 +1948,10 @@ impl<'a, 'gc> Activation<'a, 'gc> {
+         // The max value is clamped to the range [0, 2^31 - 1).
+         let max = self.context.avm1.pop().coerce_to_f64(self)? as i32;
+         let result = if max > 0 {
+-            self.context.rng.generate_random_number(self.context.locale) % max
++            {
++                if std::env::var("ISAAC_RNGTRACE").is_ok() { eprintln!("[rngcall] {} random({}) {}", crate::isaac_harness::RNG_CALLS.load(std::sync::atomic::Ordering::Relaxed), max, self.id); }
++                self.context.rng.generate_random_number(self.context.locale) % max
++            }
+         } else {
+             0
+         };
+diff --git a/core/src/avm1/globals/math.rs b/core/src/avm1/globals/math.rs
+index 7d434278..748871fc 100644
+--- a/core/src/avm1/globals/math.rs
++++ b/core/src/avm1/globals/math.rs
+@@ -113,6 +113,7 @@ pub fn method<'gc>(
+         // See https://github.com/adobe/avmplus/blob/858d034a3bd3a54d9b70909386435cf4aec81d21/core/MathUtils.cpp#L1731C24-L1731C44
+         // This generated a restricted set of 'f64' values, which some SWFs implicitly rely on.
+         RANDOM => {
++            if std::env::var("ISAAC_RNGTRACE").is_ok() { eprintln!("[rngcall] {} Math.random {}", crate::isaac_harness::RNG_CALLS.load(std::sync::atomic::Ordering::Relaxed), activation.id); }
+             const MAX_VAL: u32 = 0x7FFFFFFF;
+             let rand = activation
+                 .context
+diff --git a/core/src/avm1/globals/movie_clip.rs b/core/src/avm1/globals/movie_clip.rs
+index 829c28b5..f708d42c 100644
+--- a/core/src/avm1/globals/movie_clip.rs
++++ b/core/src/avm1/globals/movie_clip.rs
+@@ -249,6 +249,9 @@ pub fn hit_test<'gc>(
+             } else {
+                 movie_clip.hit_test_bounds(point)
+             };
++            if std::env::var("ISAAC_HITTRACE").is_ok() {
++                eprintln!("[hit] t={} {} {} {} {} = {}", crate::isaac_harness::TICK.load(std::sync::atomic::Ordering::Relaxed), movie_clip.path(), x, y, shape, ret);
++            }
+             return Ok(ret.into());
+         }
+     } else if args.len() == 1 {
+diff --git a/core/src/avm_rng.rs b/core/src/avm_rng.rs
+index cee7f19b..b8736f5c 100644
+--- a/core/src/avm_rng.rs
++++ b/core/src/avm_rng.rs
+@@ -46,6 +46,7 @@ impl AvmRng {
+     }
+ 
+     pub fn generate_random_number(&mut self, locale: &dyn LocaleBackend) -> i32 {
++        crate::isaac_harness::RNG_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         // In avmplus, RNG is initialized on first use.
+         if self.u_value == 0 {
+             let seed = get_seed(locale);
+@@ -62,5 +63,8 @@ impl AvmRng {
+ 
+ // https://github.com/adobe-flash/avmplus/blob/65a05927767f3735db37823eebf7d743531f5d37/VMPI/PosixSpecificUtils.cpp#L18
+ fn get_seed(locale: &dyn LocaleBackend) -> u32 {
++    if let Some(s) = std::env::var("ISAAC_AVMRNG").ok().and_then(|v| v.parse::<u32>().ok()) {
++        return s; // (IsaacRecomp differential testing)
++    }
+     locale.get_current_date_time().timestamp_micros() as u32
+ }
+diff --git a/core/src/isaac_harness.rs b/core/src/isaac_harness.rs
+new file mode 100644
+index 00000000..c613b412
+--- /dev/null
++++ b/core/src/isaac_harness.rs
+@@ -0,0 +1,192 @@
++//! Test harness hooks for comparing Ruffle with the IsaacRecomp native recomp (differential testing).
++//! Not part of upstream Ruffle.
++use crate::avm1::{Activation, ActivationIdentifier, ExecutionReason, Object, Value};
++use crate::context::UpdateContext;
++use crate::display_object::TDisplayObject;
++use crate::string::AvmString;
++use crate::Player;
++use std::sync::atomic::{AtomicI64, Ordering};
++
++pub static RNG_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++/// virtual getTimer() (ms); < 0 = real clock
++pub static VIRTUAL_MS: AtomicI64 = AtomicI64::new(-1);
++pub static TICK: AtomicI64 = AtomicI64::new(0);
++pub fn set_virtual_ms(ms: i64) {
++    VIRTUAL_MS.store(ms, Ordering::Relaxed);
++}
++
++fn get_path<'gc>(act: &mut Activation<'_, 'gc>, root: Object<'gc>, path: &str) -> Value<'gc> {
++    let mut cur = Value::Object(root);
++    for (i, part) in path.split('.').enumerate() {
++        if i == 0 && part == "_root" {
++            continue;
++        }
++        let o = match cur.as_object(act) {
++            Some(o) => o,
++            None => return Value::Undefined,
++        };
++        let name = AvmString::new_utf8(act.gc(), part);
++        cur = o.get(name, act).unwrap_or(Value::Undefined);
++        if i == 0 && matches!(cur, Value::Undefined) {
++            let g = act.global_object();
++            cur = g.get(name, act).unwrap_or(Value::Undefined);
++        }
++    }
++    cur
++}
++
++fn to_s<'gc>(act: &mut Activation<'_, 'gc>, v: Value<'gc>) -> String {
++    match v.coerce_to_string(act) {
++        Ok(s) => s.to_string(),
++        Err(_) => "?".to_string(),
++    }
++}
++
++fn parse_val<'gc>(act: &mut Activation<'_, 'gc>, s: &str) -> Value<'gc> {
++    if let Ok(n) = s.parse::<f64>() {
++        Value::Number(n)
++    } else if s == "true" {
++        Value::Bool(true)
++    } else if s == "false" {
++        Value::Bool(false)
++    } else {
++        Value::String(AvmString::new_utf8(act.gc(), s))
++    }
++}
++
++const BALL_FIELDS: &[&str] = &["e", "s", "xp", "yp", "xbew", "ybew", "hp", "fra", "_x", "_y", "_currentframe", "d._currentframe", "d.d._currentframe", "_rotation", "_xscale", "_alpha", "_visible", "d._x", "d._y", "d._rotation", "d._xscale", "d._visible", "dones"];
++
++fn run<'gc>(context: &mut UpdateContext<'gc>, cmd: &str) -> String {
++    let Some(root_clip) = context.stage.root_clip() else { return String::new() };
++    let mut act = Activation::from_nothing(context, ActivationIdentifier::root("[harness]"), root_clip);
++    let Some(root) = root_clip.object1() else { return String::new() };
++    let mut out = String::new();
++    if let Some(rest) = cmd.strip_prefix("set ") {
++        let mut it = rest.splitn(2, ' ');
++        let path = it.next().unwrap_or("");
++        let val = it.next().unwrap_or("");
++        let (obj, name) = match path.rfind('.') {
++            Some(p) => (get_path(&mut act, root, &path[..p]), &path[p + 1..]),
++            None => (Value::Object(root), path),
++        };
++        let v = parse_val(&mut act, val);
++        if let Some(o) = obj.as_object(&mut act) {
++            let n = AvmString::new_utf8(act.gc(), name);
++            let _ = o.set(n, v, &mut act);
++        }
++    } else if let Some(rest) = cmd.strip_prefix("copy ") {
++        // copy <dst path> <src path>
++        let parts: Vec<&str> = rest.split_whitespace().collect();
++        if parts.len() == 2 {
++            let v = get_path(&mut act, root, parts[1]);
++            let (obj, name) = match parts[0].rfind('.') {
++                Some(p) => (get_path(&mut act, root, &parts[0][..p]), &parts[0][p + 1..]),
++                None => (Value::Object(root), parts[0]),
++            };
++            if let Some(o) = obj.as_object(&mut act) {
++                let n = AvmString::new_utf8(act.gc(), name);
++                let _ = o.set(n, v, &mut act);
++            }
++        }
++    } else if let Some(rest) = cmd.strip_prefix("setat ") {
++        // setat <array path> <index path> <value>
++        let parts: Vec<&str> = rest.split_whitespace().collect();
++        if parts.len() == 3 {
++            let arr = get_path(&mut act, root, parts[0]);
++            let iv = get_path(&mut act, root, parts[1]);
++            let idx = to_s(&mut act, iv);
++            let v = parse_val(&mut act, parts[2]);
++            if let Some(o) = arr.as_object(&mut act) {
++                let n = AvmString::new_utf8(act.gc(), &idx);
++                let _ = o.set(n, v, &mut act);
++            }
++        }
++    } else if cmd == "aimkey" {
++        // the arrow key that shoots at the nearest living enemy (0: none); same rule as the recomp's autoAimKey
++        let px = get_path(&mut act, root, "_root.a.player.xp").coerce_to_f64(&mut act).unwrap_or(f64::NAN);
++        let py = get_path(&mut act, root, "_root.a.player.yp").coerce_to_f64(&mut act).unwrap_or(f64::NAN);
++        let mut best = f64::INFINITY; let (mut bx, mut by) = (0.0, 0.0);
++        if let Some(a) = get_path(&mut act, root, "_root.a.ball").as_object(&mut act) {
++            let len = a.get(AvmString::new_utf8(act.gc(), "length"), &mut act).ok().and_then(|v| v.coerce_to_f64(&mut act).ok()).unwrap_or(0.0) as usize;
++            for i in 0..len {
++                let b = a.get(AvmString::new_utf8(act.gc(), &i.to_string()), &mut act).unwrap_or(Value::Undefined);
++                let Some(bo) = b.as_object(&mut act) else { continue };
++                let sv = get_path(&mut act, bo, "s").coerce_to_f64(&mut act).unwrap_or(0.0);
++                let dones = get_path(&mut act, bo, "dones").as_bool(8);
++                let hp = get_path(&mut act, bo, "hp").coerce_to_f64(&mut act).unwrap_or(0.0);
++                if sv < 10.0 || dones || !(hp > 0.0) { continue; }
++                let x = get_path(&mut act, bo, "xp").coerce_to_f64(&mut act).unwrap_or(f64::NAN);
++                let y = get_path(&mut act, bo, "yp").coerce_to_f64(&mut act).unwrap_or(f64::NAN);
++                let d = (x - px) * (x - px) + (y - py) * (y - py);
++                if d < best { best = d; bx = x; by = y; }
++            }
++        }
++        let k = if !best.is_finite() { 0 } else {
++            let (dx, dy) = (bx - px, by - py);
++            if dx.abs() > dy.abs() { if dx > 0.0 { 39 } else { 37 } } else if dy > 0.0 { 40 } else { 38 }
++        };
++        out.push_str(&format!("{k}"));
++    } else if let Some(rest) = cmd.strip_prefix("call ") {
++        let parts: Vec<&str> = rest.split_whitespace().collect();
++        if parts.len() >= 2 {
++            let obj = get_path(&mut act, root, parts[0]);
++            let args: Vec<Value> = parts[2..].iter().map(|a| parse_val(&mut act, a)).collect();
++            if let Some(o) = obj.as_object(&mut act) {
++                let n = AvmString::new_utf8(act.gc(), parts[1]);
++                let r = o.call_method(n, &args, &mut act, ExecutionReason::Special);
++                let s = match r { Ok(v) => to_s(&mut act, v), Err(_) => "error".into() };
++                out.push_str(&format!("[call] {} = {}\n", rest, s));
++            } else {
++                out.push_str(&format!("[call] {} = undefined\n", rest));
++            }
++        }
++    } else if let Some(path) = cmd.strip_prefix("props ") {
++        let obj = get_path(&mut act, root, path);
++        if let Some(o) = obj.as_object(&mut act) {
++            let keys = o.get_keys(&mut act, false);
++            let mut kv: Vec<(String, String)> = vec![];
++            for k in keys {
++                let v = o.get(k, &mut act).unwrap_or(Value::Undefined);
++                let vs = match v { Value::Object(_) | Value::MovieClip(_) => "[obj]".to_string(), _ => to_s(&mut act, v) };
++                kv.push((k.to_string(), vs));
++            }
++            kv.sort();
++            for (k, v) in kv { out.push_str(&format!("[prop] {} {} = {}\n", path, k, v)); }
++        }
++    } else if cmd == "rng" {
++        out.push_str(&format!("[rng] {}\n", RNG_CALLS.load(Ordering::Relaxed)));
++    } else if cmd == "balls" || cmd.starts_with("balls ") {
++        let arr = get_path(&mut act, root, "_root.a.ball");
++        if let Some(a) = arr.as_object(&mut act) {
++            let len = a.get(AvmString::new_utf8(act.gc(), "length"), &mut act).ok().and_then(|v| v.coerce_to_f64(&mut act).ok()).unwrap_or(0.0) as usize;
++            for i in 0..len {
++                let b = a.get(AvmString::new_utf8(act.gc(), &i.to_string()), &mut act).unwrap_or(Value::Undefined);
++                let mut line = format!("[ball] {} {i}:", TICK.load(Ordering::Relaxed));
++                if let Some(bo) = b.as_object(&mut act) {
++                    for f in BALL_FIELDS {
++                        let v = get_path(&mut act, bo, f);
++                        line.push_str(&format!(" {}={}", f, to_s(&mut act, v)));
++                    }
++                }
++                out.push_str(&line);
++                out.push('\n');
++            }
++        }
++    } else {
++        let v = get_path(&mut act, root, cmd);
++        let s = to_s(&mut act, v);
++        out.push_str(&format!("[eval] {} = {}\n", cmd, s));
++    }
++    out
++}
++
++/// "path" (print), "set path value", "call path method args...", "balls" (the game's enemy list)
++pub fn eval(player: &mut Player, cmd: &str) -> String {
++    player.mutate_with_update_context(|context| {
++        let r = run(context, cmd);
++        if cmd.starts_with("call ") {
++            Player::run_actions(context); // (like the recomp's eval call)
++        }
++        r
++    })
++}
+diff --git a/core/src/lib.rs b/core/src/lib.rs
+index d76c1cba..fddcec3a 100644
+--- a/core/src/lib.rs
++++ b/core/src/lib.rs
+@@ -46,6 +46,7 @@ mod system_properties;
+ pub mod tag_utils;
+ mod tessellation_cache;
+ pub mod timer;
++pub mod isaac_harness;
+ mod types;
+ mod vminterface;
+ 
+diff --git a/isaac_harness/Cargo.toml b/isaac_harness/Cargo.toml
+new file mode 100644
+index 00000000..558876f6
+--- /dev/null
++++ b/isaac_harness/Cargo.toml
+@@ -0,0 +1,8 @@
++[package]
++name = "isaac_harness"
++version = "0.1.0"
++edition = "2024"
++publish = false
++
++[dependencies]
++ruffle_core = { path = "../core" }
+diff --git a/isaac_harness/src/main.rs b/isaac_harness/src/main.rs
+new file mode 100644
+index 00000000..99ea32c7
+--- /dev/null
++++ b/isaac_harness/src/main.rs
+@@ -0,0 +1,112 @@
++//! Headless Ruffle runner for differential tests against IsaacRecomp.
++//! isaac_harness <swf> <script> <frames>
++//! script lines: "<frame> down|up <flash keycode>", "<frame> click x y", "<frame> eval <cmd>", "<frame> quit"
++use ruffle_core::backend::locale::DeterministicLocaleBackend;
++use ruffle_core::events::{KeyDescriptor, KeyLocation, LogicalKey, MouseButton, NamedKey, PhysicalKey, PlayerEvent};
++use ruffle_core::limits::ExecutionLimit;
++use ruffle_core::tag_utils::movie_from_path;
++use ruffle_core::{FloatDuration, PlayerBuilder};
++use std::path::Path;
++use std::time::Duration;
++
++fn key(code: u32) -> KeyDescriptor {
++    let (logical, physical) = match code {
++        37 => (LogicalKey::Named(NamedKey::ArrowLeft), PhysicalKey::ArrowLeft),
++        38 => (LogicalKey::Named(NamedKey::ArrowUp), PhysicalKey::ArrowUp),
++        39 => (LogicalKey::Named(NamedKey::ArrowRight), PhysicalKey::ArrowRight),
++        40 => (LogicalKey::Named(NamedKey::ArrowDown), PhysicalKey::ArrowDown),
++        27 => (LogicalKey::Named(NamedKey::Escape), PhysicalKey::Escape),
++        13 => (LogicalKey::Named(NamedKey::Enter), PhysicalKey::Enter),
++        16 => (LogicalKey::Named(NamedKey::Shift), PhysicalKey::ShiftLeft),
++        32 => (LogicalKey::Character(' '), PhysicalKey::Space),
++        c if (65..=90).contains(&c) => {
++            let ch = char::from_u32(c + 32).unwrap();
++            let phys = [PhysicalKey::KeyA, PhysicalKey::KeyB, PhysicalKey::KeyC, PhysicalKey::KeyD, PhysicalKey::KeyE, PhysicalKey::KeyF, PhysicalKey::KeyG,
++                PhysicalKey::KeyH, PhysicalKey::KeyI, PhysicalKey::KeyJ, PhysicalKey::KeyK, PhysicalKey::KeyL, PhysicalKey::KeyM, PhysicalKey::KeyN,
++                PhysicalKey::KeyO, PhysicalKey::KeyP, PhysicalKey::KeyQ, PhysicalKey::KeyR, PhysicalKey::KeyS, PhysicalKey::KeyT, PhysicalKey::KeyU,
++                PhysicalKey::KeyV, PhysicalKey::KeyW, PhysicalKey::KeyX, PhysicalKey::KeyY, PhysicalKey::KeyZ][(c - 65) as usize];
++            (LogicalKey::Character(ch), phys)
++        }
++        _ => (LogicalKey::Unknown, PhysicalKey::Unknown),
++    };
++    KeyDescriptor { physical_key: physical, logical_key: logical, key_location: KeyLocation::Standard }
++}
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    let swf = &args[1];
++    let script = std::fs::read_to_string(&args[2]).unwrap();
++    let frames: u32 = args[3].parse().unwrap();
++    let mut cmds: Vec<(u32, String, String)> = vec![];
++    for line in script.lines() {
++        let line = line.trim();
++        let mut it = line.splitn(3, ' ');
++        let (Some(t), Some(op)) = (it.next(), it.next()) else { continue };
++        let Ok(t) = t.parse::<u32>() else { continue };
++        cmds.push((t, op.to_string(), it.next().unwrap_or("").to_string()));
++    }
++    let movie = movie_from_path(Path::new(swf), None).unwrap();
++    let w = movie.width().to_pixels() as u32;
++    let h = movie.height().to_pixels() as u32;
++    let fps = movie.frame_rate().to_f64();
++    let frame_ms = 1000.0 / fps;
++    let player = PlayerBuilder::new()
++        .with_locale(DeterministicLocaleBackend::default())
++        .with_max_execution_duration(Duration::from_secs(300))
++        .with_viewport_dimensions(w, h, 1.0)
++        .with_movie(movie)
++        .with_autoplay(true)
++        .build();
++    let mut p = player.lock().unwrap();
++    p.preload(&mut ExecutionLimit::none());
++    let mut pos = 0;
++    let (mut aim_on, mut aim_key) = (false, 0u32);
++    for f in 0..frames {
++        ruffle_core::isaac_harness::set_virtual_ms((f as f64 * 1000.0 / fps).floor() as i64);
++        ruffle_core::isaac_harness::TICK.store(f as i64, std::sync::atomic::Ordering::Relaxed);
++        let mut quit = false;
++        while pos < cmds.len() && cmds[pos].0 <= f {
++            let (_, op, arg) = cmds[pos].clone();
++            pos += 1;
++            match op.as_str() {
++                "down" => {
++                    let c: u32 = arg.parse().unwrap();
++                    p.handle_event(PlayerEvent::KeyDown { key: key(c) });
++                    if c == 32 { p.handle_event(PlayerEvent::TextInput { codepoint: ' ' }); }   // (as the recomp's script: ascii only for Space)
++                }
++                "up" => { p.handle_event(PlayerEvent::KeyUp { key: key(arg.parse().unwrap()) }); }
++                "click" => {
++                    let v: Vec<f64> = arg.split_whitespace().map(|s| s.parse().unwrap()).collect();
++                    p.handle_event(PlayerEvent::MouseMove { x: v[0], y: v[1] });
++                    p.handle_event(PlayerEvent::MouseDown { x: v[0], y: v[1], button: MouseButton::Left, index: None });
++                    p.handle_event(PlayerEvent::MouseUp { x: v[0], y: v[1], button: MouseButton::Left });
++                }
++                "mmove" | "mdown" | "mup" => {
++                    let v: Vec<f64> = arg.split_whitespace().map(|s| s.parse().unwrap()).collect();
++                    let ev = match op.as_str() {
++                        "mmove" => PlayerEvent::MouseMove { x: v[0], y: v[1] },
++                        "mdown" => PlayerEvent::MouseDown { x: v[0], y: v[1], button: MouseButton::Left, index: None },
++                        _ => PlayerEvent::MouseUp { x: v[0], y: v[1], button: MouseButton::Left },
++                    };
++                    p.handle_event(ev);
++                }
++                "eval" if arg == "aim 1" => { aim_on = true; }
++                "eval" if arg == "aim 0" => { aim_on = false; if aim_key != 0 { p.handle_event(PlayerEvent::KeyUp { key: key(aim_key) }); aim_key = 0; } }
++                "eval" => { print!("{}", ruffle_core::isaac_harness::eval(&mut p, &arg)); }
++                "quit" => quit = true,
++                _ => {}
++            }
++        }
++        if quit { break; }
++        if aim_on {
++            let k: u32 = ruffle_core::isaac_harness::eval(&mut p, "aimkey").trim().parse().unwrap_or(0);
++            if k != aim_key {
++                if aim_key != 0 { p.handle_event(PlayerEvent::KeyUp { key: key(aim_key) }); }
++                if k != 0 { p.handle_event(PlayerEvent::KeyDown { key: key(k) }); }
++                aim_key = k;
++            }
++        }
++        p.run_frame();
++        p.update_timers(FloatDuration::from_millis(frame_ms));
++    }
++}

@@ -15,17 +15,45 @@ constexpr int AVM_MAX_REMOVE_DEPTH = 2130706416;
 static const double kPi = 3.14159265358979323846;
 
 // ============================================================ Transforms
+// Port of Ruffle's DisplayObjectBase transform (display_object.rs): the matrix a..d are f32, scale / rotation are
+// cached and returned exactly as set by script (Percent / Degrees, Rust's to_degrees / to_radians).
+static inline double f32r(double v) { return (double)(float)v; }
+static const double kR2D = 57.2957795130823208767981548141051703;   // f64::to_degrees
+static inline double d2r(double d) { return d * (3.14159265358979323846 / 180.0); }   // f64::to_radians
 void DisplayObject::setMatrix(const Mat& mm) {
-    m = mm;
-    rotX = std::atan2(m.b, m.a);
-    double rotY_ = std::atan2(-m.c, m.d);
-    sx = std::sqrt(m.a * m.a + m.b * m.b);
-    sy = std::sqrt(m.c * m.c + m.d * m.d);
-    rotY = rotY_ - rotX;   // skew
+    m = mm; m.a = f32r(m.a); m.b = f32r(m.b); m.c = f32r(m.c); m.d = f32r(m.d);
+    srCached = false;
 }
-void DisplayObject::compose() {
-    double cx_ = std::cos(rotX), sx_ = std::sin(rotX), cy_ = std::cos(rotX + rotY), sy_ = std::sin(rotX + rotY);
-    m.a = sx * cx_; m.b = sx * sx_; m.c = sy * -sy_; m.d = sy * cy_;
+void DisplayObject::cacheSR() {
+    if (srCached) return;
+    double rx = std::atan2(m.b, m.a), ry = std::atan2(-m.c, m.d);
+    rotD = rx * kR2D;
+    sxP = std::sqrt(m.a * m.a + m.b * m.b) * 100.0;
+    syP = std::sqrt(m.c * m.c + m.d * m.d) * 100.0;
+    skew = ry - rx;
+    srCached = true;
+}
+void DisplayObject::setRotation(double deg) {
+    cacheSR(); rotD = deg;
+    double r = d2r(deg);
+    if (std::isnan(r)) return;
+    double cx_ = std::cos(r), sx_ = std::sin(r), cy_ = std::cos(r + skew), sy_ = std::sin(r + skew);
+    double ux = sxP / 100.0, uy = syP / 100.0;
+    m.a = f32r(ux * cx_); m.b = f32r(ux * sx_); m.c = f32r(uy * -sy_); m.d = f32r(uy * cy_);
+}
+void DisplayObject::setScaleX(double pct) {
+    cacheSR(); sxP = pct;
+    if (std::isnan(pct)) pct = 0;
+    double r = d2r(rotD); if (std::isnan(r)) r = 0;
+    double u = pct / 100.0;
+    m.a = f32r(std::cos(r) * u); m.b = f32r(std::sin(r) * u);
+}
+void DisplayObject::setScaleY(double pct) {
+    cacheSR(); syP = pct;
+    if (std::isnan(pct)) pct = 0;
+    double r = d2r(rotD); if (std::isnan(r)) r = 0;
+    double u = pct / 100.0;
+    m.c = f32r(-std::sin(r + skew) * u); m.d = f32r(std::cos(r + skew) * u);
 }
 void DisplayObject::trace(Tracer& tr) { Object::trace(tr); tr.mark(parent); tr.mark(name); tr.mark(path); }
 void BitmapObj::trace(Tracer& tr) { DisplayObject::trace(tr); tr.mark(bd); }
@@ -127,6 +155,21 @@ Value resolveTargetPath(Act& a, const Value& path) {
 
 // ============================================================ Display properties
 static double roundTwips(double v) { return std::round(v * 20.0) / 20.0; }
+// _x / _y: Flash stores whole twips, truncating toward zero (Ruffle: Twips::from_pixels, `(px * 20) as i32`, which
+// saturates); +-Infinity becomes -Infinity (so -107374182.4)
+static double toTwips(double px) {
+    if (std::isinf(px)) px = -INFINITY;
+    double t = px * 20.0;
+    int32_t i = std::isnan(t) ? 0 : t >= 2147483647.0 ? 2147483647 : t <= -2147483648.0 ? (int32_t)-2147483648LL : (int32_t)t;
+    return i / 20.0;
+}
+// a display property's new value: undefined, null and NaN are ignored; Infinity is accepted (Ruffle:
+// property_coerce_to_number)
+static bool coerceNum(const Value& v, double& out) {
+    if (v.isNullish()) return false;
+    out = toNum(v);
+    return !std::isnan(out);
+}
 static bool coerceProp(const Value& v, double& out) {
     if (v.isNullish()) return false;
     out = toNum(v);
@@ -144,18 +187,18 @@ static Value getDisplayProp(DisplayObject* d, int idx) {
     switch (idx) {
         case 0: return Value(d->m.tx);
         case 1: return Value(d->m.ty);
-        case 2: return Value(d->sx * 100.0);
-        case 3: return Value(d->sy * 100.0);
+        case 2: d->cacheSR(); return Value(d->sxP);
+        case 3: d->cacheSR(); return Value(d->syP);
         case 4: {
             if (d->kind != OK_CLIP) return Value(1.0);
             MovieClip* c = (MovieClip*)d;
-            return Value((double)std::max(1, c->cur) + (c->holdTick == g_player.tick + 1 ? 0.5 : 0.0));
+            return Value((double)std::max(1, c->cur));
         }
         case 5: case 12: return Value((double)(d->kind == OK_CLIP ? ((MovieClip*)d)->def->nframes : 1));
         case 6: return Value((double)d->cx.am * 100.0);
         case 7: return VB(d->visible);
         case 8: case 9: { RectF b = localBounds(d); return Value(idx == 8 ? b.x1 - b.x0 : b.y1 - b.y0); }
-        case 10: { double deg = d->rotX * 180.0 / kPi; return Value(deg); }
+        case 10: d->cacheSR(); return Value(d->rotD);
         case 11: return Value(slashPath(d));
         case 13: return Value(d->name ? d->name : atoms::empty);
         case 14: return Value(atoms::empty);
@@ -173,21 +216,37 @@ static Value getDisplayProp(DisplayObject* d, int idx) {
 static void setDisplayProp(DisplayObject* d, int idx, const Value& v) {
     double n;
     switch (idx) {
-        case 0: if (coerceProp(v, n)) { if (!std::isfinite(n)) n = n > 0 ? 107374182.35 : -107374182.4; d->m.tx = roundTwips(n); d->scriptXform = true; } break;
-        case 1: if (coerceProp(v, n)) { if (!std::isfinite(n)) n = n > 0 ? 107374182.35 : -107374182.4; d->m.ty = roundTwips(n); d->scriptXform = true; } break;
-        case 2: if (coerceProp(v, n)) { d->sx = n / 100.0; d->compose(); d->scriptXform = true; } break;
-        case 3: if (coerceProp(v, n)) { d->sy = n / 100.0; d->compose(); d->scriptXform = true; } break;
+        case 0: if (coerceNum(v, n)) { d->m.tx = toTwips(n); d->scriptXform = true; } break;
+        case 1: if (coerceNum(v, n)) { d->m.ty = toTwips(n); d->scriptXform = true; } break;
+        case 2: if (coerceProp(v, n)) { d->setScaleX(n); d->scriptXform = true; } break;
+        case 3: if (coerceProp(v, n)) { d->setScaleY(n); d->scriptXform = true; } break;
         case 6: if (coerceProp(v, n)) { d->cx.am = (float)(n / 100.0); d->scriptXform = true; } break;
         case 7: if (coerceProp(v, n) || v.t == T_BOOL) d->visible = v.t == T_BOOL ? v.b : n != 0; break;
         case 8: case 9: {
             if (!coerceProp(v, n)) break;
-            RectF b = localBounds(d); double cur = idx == 8 ? b.x1 - b.x0 : b.y1 - b.y0;
-            if (cur > 0) { if (idx == 8) d->sx *= n / cur; else d->sy *= n / cur; d->compose(); d->scriptXform = true; }
+            // Ruffle's set_width / set_height (bounds in the object's own space, rotation-aware)
+            Mat save = d->m; d->m = Mat(); RectF b = localBounds(d); d->m = save;
+            double ow = b.x1 - b.x0, oh = b.y1 - b.y0;
+            d->cacheSR();
+            double px = d->sxP / 100.0, py = d->syP / 100.0, r = d2r(d->rotD);
+            double c = std::fabs(std::cos(r)), sn = std::fabs(std::sin(r)), nx, ny;
+            if (idx == 8) {
+                double ar = oh / ow, tx = ow != 0 ? n / ow : 0, ty = ow != 0 ? n / oh : 0;
+                nx = ar * (c * tx + sn * ty) / ((c + ar * sn) * (ar * c + sn));
+                ny = (sn * px + ar * c * py) / (ar * c + sn);
+            } else {
+                double ar = ow / oh, tx = oh != 0 ? n / ow : 0, ty = oh != 0 ? n / oh : 0;
+                nx = (ar * c * px + sn * py) / (ar * c + sn);
+                ny = ar * (sn * tx + c * ty) / ((c + ar * sn) * (ar * c + sn));
+            }
+            if (!std::isfinite(nx)) nx = 0;
+            if (!std::isfinite(ny)) ny = 0;
+            d->setScaleX(nx * 100.0); d->setScaleY(ny * 100.0); d->scriptXform = true;
             break;
         }
         case 10: if (coerceProp(v, n)) {
             double deg = std::fmod(n, 360.0); if (deg < -180) deg += 360; else if (deg > 180) deg -= 360;
-            d->rotX = deg * kPi / 180.0; d->compose(); d->scriptXform = true; } break;
+            d->setRotation(deg); d->scriptXform = true; } break;
         case 13: if (d->parent) d->parent->renameChild(d, atomOf(toStr(v))); else d->name = atomOf(toStr(v)); break;
         case 16: if (coerceProp(v, n)) g_player.quality = n > 0 ? 2 : 0; break;
         case 19: {
@@ -412,7 +471,7 @@ static void startTimelineSound(MovieClip* c, const FrameCmd& fc) {
     SoundDef* s = (SoundDef*)cd;
     if (fc.soundFlags & 0x20) { extern void soundStopDef(SoundDef*); soundStopDef(s); return; }
     if ((fc.soundFlags & 0x10) && soundPlayingDef(s)) return;
-    soundStart(s, fc.inPoint / 44100.0, fc.loops ? fc.loops : 1, c, 1.0f, 0.0f);
+    soundStart(s, fc.inPoint / 44100.0, fc.loops ? fc.loops : 1, c, 1.0f, 0.0f, fc.envelope.empty() ? nullptr : &fc.envelope);
 }
 
 static void handleStream(MovieClip* c) {
@@ -556,25 +615,55 @@ static void runGoto(MovieClip* c, int frame, bool implicit) {
 }
 
 void gotoFrame(MovieClip* c, int frame, bool stop) {
+    if (const char* gt = getenv("ISAAC_GOTOTRACE")) {   // (testing) who sends a clip to a frame
+        std::string p = targetPath(c)->s;
+        if (p.find(gt) != std::string::npos) logf("[goto] t=%u %s -> %d (from %d)\n", g_player.tick, p.c_str(), frame, c->cur);
+    }
     if (frame < 1) frame = 1;
     if (stop) { c->playing = false; stopStream(c); } else c->playing = true;
     if (frame != c->cur) runGoto(c, frame, false);
 }
 
+// Rust's str::parse::<f64>() (Ruffle parses goto frame strings with it): decimal only, no whitespace, "inf"/"nan"
+static bool rustParseF64(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    size_t i = 0; if (s[0] == '+' || s[0] == '-') i++;
+    std::string rest = s.substr(i); for (auto& ch : rest) ch = (char)tolower((unsigned char)ch);
+    if (rest == "inf" || rest == "infinity") { out = s[0] == '-' ? -INFINITY : INFINITY; return true; }
+    if (rest == "nan") { out = NAN; return true; }
+    bool digits = false; size_t j = i;
+    while (j < s.size() && isdigit((unsigned char)s[j])) { j++; digits = true; }
+    if (j < s.size() && s[j] == '.') { j++; while (j < s.size() && isdigit((unsigned char)s[j])) { j++; digits = true; } }
+    if (!digits) return false;
+    if (j < s.size() && (s[j] == 'e' || s[j] == 'E')) {
+        size_t k = j + 1; if (k < s.size() && (s[k] == '+' || s[k] == '-')) k++;
+        size_t k0 = k; while (k < s.size() && isdigit((unsigned char)s[k])) k++;
+        if (k == k0) return false;
+        j = k;
+    }
+    if (j != s.size()) return false;
+    out = strtod(s.c_str(), nullptr);
+    return true;
+}
+// gotoAndStop / gotoAndPlay argument (Ruffle avm1/globals/movie_clip.rs goto_frame): a whole number is a frame;
+// anything else (including fractional numbers) is coerced to a string and resolved as "path:frame" or
+// "path.frame" (the right-most ':' or '.'), the frame being a number or a label of that clip. So
+// gotoAndStop(7.5) looks for a clip named "7" and does nothing.
 int frameFromValue(MovieClip* c, const Value& v, MovieClip** target) {
     *target = c;
     if (v.t == T_NUM && v.n == std::floor(v.n)) return toInt32(v.n);
     Str* s = toStr(v);
     std::string fs = s->s;
-    size_t colon = fs.find_last_of(':');
-    if (colon != std::string::npos) {
+    size_t sep = fs.find_last_of(":.");
+    if (sep != std::string::npos) {
         Act a{vm.globalScope, VUNDEF, c, nullptr};
-        Value t = resolveTargetPath(a, mkstr(fs.substr(0, colon)));
+        Value t = resolveTargetPath(a, mkstr(fs.substr(0, sep)));
         if (!t.isObj() || t.o->kind != OK_CLIP) return 0;
-        *target = (MovieClip*)t.o; fs = fs.substr(colon + 1);
+        *target = (MovieClip*)t.o; fs = fs.substr(sep + 1);
     }
-    double n = strToNum(fs);
-    if (!std::isnan(n)) return toInt32(n);
+    double n;
+    if (rustParseF64(fs, n)) return toInt32(n);
+    for (auto& ch : fs) ch = (char)tolower((unsigned char)ch);   // (labels are stored lowercase: case-insensitive)
     auto it = (*target)->def->labels.find(fs);
     if (it != (*target)->def->labels.end()) return it->second;
     return 0;
@@ -663,7 +752,8 @@ void actGotoFrame2(Act& a, const Value& f, bool play, int bias) {
 }
 void actGotoLabel(Act& a, Str* label) {
     MovieClip* c = targetClip(a); if (!c) return;
-    auto it = c->def->labels.find(label->s);
+    std::string l = label->s; for (auto& ch : l) ch = (char)tolower((unsigned char)ch);
+    auto it = c->def->labels.find(l);
     if (it != c->def->labels.end()) gotoFrame(c, it->second, true);
 }
 void actStop(Act& a) { if (MovieClip* c = targetClip(a)) { c->playing = false; stopStream(c); } }
@@ -745,12 +835,111 @@ static bool pointInPolys(const std::vector<std::vector<float>>& polys, double x,
     }
     return false;
 }
+// ---- exact shape hit test, ported from Ruffle (render/src/shape_utils.rs): winding numbers on the SWF edges in
+// twips (one-sided fill edges only; even-odd per style layer), strokes with half their width (at least 1 px on
+// screen). Flattening the curves (as the hit polygons did) missed up to ~1 px near curved edges: creep/blood
+// tests (hitTest(x, y, true)) disagreed with Flash on the borders of the splats.
+static int windingLine(int64_t px, int64_t py, int64_t ax, int64_t ay, int64_t bx, int64_t by) {
+    int64_t d0x = px - ax, d0y = py - ay, d1x = bx - ax, d1y = by - ay;
+    if (ay <= py && py < by && d1x * d0y >= d1y * d0x) return 1;
+    if (by <= py && py < ay && d1x * d0y <= d1y * d0x) return -1;
+    return 0;
+}
+static void solveQuadratic(double a, double b, double c, double& t0, double& t1) {
+    if (std::fabs(a) <= 1e-6) { if (b >= 0) { t0 = NAN; t1 = -c / b; } else { t0 = -c / b; t1 = NAN; } return; }
+    double disc = b * b - 4 * a * c;
+    if (disc < 0) { t0 = t1 = NAN; return; }
+    disc = std::sqrt(disc);
+    if (b >= 0) { t0 = (-b - disc) / (2 * a); t1 = (-b + disc) / (2 * a); }
+    else { double r0 = (-b + disc) / (2 * a), r1 = (-b - disc) / (2 * a); t0 = r1; t1 = r0; }
+}
+static int windingCurve(int64_t px, int64_t py, int64_t bx0, int64_t by0, int64_t cx0, int64_t cy0, int64_t ax0, int64_t ay0) {
+    int64_t d0x = bx0 - px, d0y = by0 - py, d1x = cx0 - px, d1y = cy0 - py, d2x = ax0 - px, d2y = ay0 - py;
+    if ((d0y < 0 && d1y < 0 && d2y < 0) || (d0y > 0 && d1y > 0 && d2y > 0) || (d0x <= 0 && d1x <= 0 && d2x <= 0)) return 0;
+    double x0 = (double)d0x, y0 = (double)d0y, x1 = (double)d1x, y1 = (double)d1y, x2 = (double)d2x, y2 = (double)d2y;
+    double a = y0 - 2.0 * y1 + y2, b = 2.0 * (y1 - y0), c = y0;
+    double t0, t1; solveQuadratic(a, b, c, t0, t1);
+    bool v0 = std::isfinite(t0), v1 = std::isfinite(t1);
+    if (!v0 && !v1) return 0;
+    int w = 0;
+    double ax = x0 - 2.0 * x1 + x2, bx = 2.0 * (x1 - x0);
+    double te = -0.5 * b / a;
+    bool mono = te <= 0.0 || te >= 1.0;   // (NaN when a == 0: not monotonic, as in Ruffle)
+    auto in = [](double lo, double hi) { return lo <= 0.0 && 0.0 < hi; };
+    if (a >= 0.0) {
+        double ymin = mono ? std::min(y0, y2) : a * te * te + b * te + c;
+        if (v0 && in(ymin, y0)) { double x = x0 + bx * t0 + ax * t0 * t0; if (x > 0.0) w += 1; }
+        if (v1 && in(ymin, y2)) { double x = x0 + bx * t1 + ax * t1 * t1; if (x > 0.0) w -= 1; }
+    } else {
+        double ymax = mono ? std::max(y0, y2) : a * te * te + b * te + c;
+        if (v1 && in(y0, ymax)) { double x = x0 + bx * t1 + ax * t1 * t1; if (x > 0.0) w -= 1; }
+        if (v0 && in(y2, ymax)) { double x = x0 + bx * t0 + ax * t0 * t0; if (x > 0.0) w += 1; }
+    }
+    return w;
+}
+static bool strokeLineHit(double px, double py, double x0, double y0, double x1, double y1, double w, double w2) {
+    if (px < std::min(x0, x1) - w || px > std::max(x0, x1) + w || py < std::min(y0, y1) - w || py > std::max(y0, y1) + w) return false;
+    double abx = x1 - x0, aby = y1 - y0, apx = px - x0, apy = py - y0, dotA = abx * apx + aby * apy, dist;
+    if (dotA <= 0) dist = apx * apx + apy * apy;
+    else {
+        double bpx = px - x1, bpy = py - y1, dotB = abx * bpx + aby * bpy;
+        if (dotB >= 0) dist = bpx * bpx + bpy * bpy;
+        else { double len = abx * abx + aby * aby, ex = apx - dotA * abx / len, ey = apy - dotA * aby / len; dist = ex * ex + ey * ey; }
+    }
+    return dist <= w2;
+}
+static bool strokeCurveHit(double px, double py, double x0, double y0, double x1, double y1, double x2, double y2, double w, double w2) {
+    if (px < std::min({x0, x1, x2}) - w || px > std::max({x0, x1, x2}) + w || py < std::min({y0, y1, y2}) - w || py > std::max({y0, y1, y2}) + w) return false;
+    double ax = x1 - x0, ay = y1 - y0, bx = x2 - x1 - ax, by = y2 - y1 - ay, mx = x0 - px, my = y0 - py;
+    double a = bx * bx + by * by, b = 3.0 * (ax * bx + ay * by), c = 2.0 * (ax * ax + ay * ay) + (mx * bx + my * by), d = mx * ax + my * ay;
+    auto distAt = [&](double t) { double u = 1 - t, cx = u * u * x0 + 2 * u * t * x1 + t * t * x2, cy = u * u * y0 + 2 * u * t * y1 + t * t * y2; return (cx - px) * (cx - px) + (cy - py) * (cy - py); };
+    double dist = std::min(distAt(0.0), distAt(1.0));
+    // roots of a t^3 + b t^2 + c t + d (Ruffle solve_cubic: Cardano)
+    double roots[3]; int nr = 0;
+    if (std::fabs(a) <= 1e-6) { double t0, t1; solveQuadratic(b, c, d, t0, t1); roots[nr++] = t0; roots[nr++] = t1; }
+    else {
+        double p = (b * b - 3.0 * a * c) / (9.0 * a * a), q = (9.0 * a * b * c - 27.0 * a * a * d - 2.0 * b * b * b) / (54.0 * a * a * a);
+        double offset = b / (3.0 * a), disc = p * p * p - q * q;
+        if (disc > 0.0) {
+            double theta = std::acos(q / (p * std::sqrt(p))), r = 2.0 * std::sqrt(p);
+            roots[nr++] = r * std::cos(theta / 3.0) - offset; roots[nr++] = r * std::cos((theta + 2.0 * kPi) / 3.0) - offset; roots[nr++] = r * std::cos((theta + 4.0 * kPi) / 3.0) - offset;
+        } else {
+            double g1 = std::cbrt(q + std::sqrt(-disc)), g2 = std::cbrt(q - std::sqrt(-disc));
+            roots[nr++] = g1 + g2 - offset;
+            if (disc == 0.0) roots[nr++] = -0.5 * (g1 + g2) - offset;
+        }
+    }
+    for (int i = 0; i < nr; i++) if (roots[i] >= 0 && roots[i] <= 1) dist = std::min(dist, distAt(roots[i]));
+    return dist <= w2;
+}
+// point in the shape's local twips; minWidth = 1 screen pixel in local twips
+static bool shapeHitTwips(const ShapeDef* s, int64_t px, int64_t py, double minWidth) {
+    int winding = 0;
+    for (const HitEdge& e : s->hitEdges) {
+        if (e.kind == 2) { if (winding & 1) return true; winding = 0; continue; }
+        if (e.kind == 0) {
+            if (e.f1) { if (!e.f0) winding += windingLine(px, py, e.x0, e.y0, e.x1, e.y1); }
+            else if (e.f0) winding += windingLine(px, py, e.x1, e.y1, e.x0, e.y0);
+            if (e.stroke >= 0) { double w = 0.5 * std::max((double)e.stroke, minWidth); if (strokeLineHit((double)px, (double)py, e.x0, e.y0, e.x1, e.y1, w, w * w)) return true; }
+        } else {
+            if (e.f1) { if (!e.f0) winding += windingCurve(px, py, e.x0, e.y0, e.cx, e.cy, e.x1, e.y1); }
+            else if (e.f0) winding += windingCurve(px, py, e.x1, e.y1, e.cx, e.cy, e.x0, e.y0);
+            if (e.stroke >= 0) { double w = 0.5 * std::max((double)e.stroke, minWidth); if (strokeCurveHit((double)px, (double)py, e.x0, e.y0, e.cx, e.cy, e.x1, e.y1, w, w * w)) return true; }
+        }
+    }
+    return winding & 1;
+}
 static bool hitShape(DisplayObject* d, const Mat& world, double gx, double gy, bool shapeFlag) {
     if (!d->visible && shapeFlag) return false;
     switch (d->kind) {
         case OK_CLIP: {
+            // in display order; a mask (clipDepth) that isn't hit hides the children it masks (Ruffle hit_test_shape)
             auto& kids = ((MovieClip*)d)->kids;
-            for (size_t i = kids.size(); i-- > 0;) { DisplayObject* k = kids[i]; if (k->clipDepth) continue; if (hitShape(k, world * k->m, gx, gy, shapeFlag)) return true; }
+            int clipDepth = 0;
+            for (DisplayObject* k : kids) {
+                if (k->clipDepth > 0) { clipDepth = hitShape(k, world * k->m, gx, gy, shapeFlag) ? 0 : k->clipDepth; continue; }
+                if (k->depth >= clipDepth && hitShape(k, world * k->m, gx, gy, shapeFlag)) return true;
+            }
             return false;
         }
         case OK_BUTTON: {
@@ -765,11 +954,28 @@ static bool hitShape(DisplayObject* d, const Mat& world, double gx, double gy, b
         ShapeDef* s = (ShapeDef*)((ShapeObj*)d)->def;
         if (lx < s->bounds.x0 || lx > s->bounds.x1 || ly < s->bounds.y0 || ly > s->bounds.y1) return false;
         if (!shapeFlag) return true;
-        return pointInPolys(shapeHitPolys(s), lx, ly);
+        // global point in whole twips (as Ruffle), then local twips rounded
+        double tgx = std::round(gx * 20.0) / 20.0, tgy = std::round(gy * 20.0) / 20.0;
+        inv.apply(tgx, tgy, lx, ly);
+        double sx = std::sqrt(inv.a * inv.a + inv.b * inv.b), sy = std::sqrt(inv.c * inv.c + inv.d * inv.d);
+        return shapeHitTwips(s, (int64_t)std::llround(lx * 20.0), (int64_t)std::llround(ly * 20.0), 20.0 * std::max(sx, sy));
     }
     RectF b; boundsInto(d, Mat(), b);
     return lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1;
 }
+// (testing) eval hitdebug <path> x y: every shape under the clip whose bounds contain the point (_root coordinates)
+static void hitDebugRec(DisplayObject* d, const Mat& world, double gx, double gy) {
+    if (d->kind == OK_CLIP) { for (auto* k : ((MovieClip*)d)->kids) hitDebugRec(k, world * k->m, gx, gy); return; }
+    Mat inv; if (!world.invert(inv)) return;
+    double lx, ly; inv.apply(gx, gy, lx, ly);
+    if (d->kind == OK_SHAPE) {
+        ShapeDef* s = (ShapeDef*)((ShapeObj*)d)->def;
+        if (lx < s->bounds.x0 || lx > s->bounds.x1 || ly < s->bounds.y0 || ly > s->bounds.y1) return;
+        logf("[hitdbg] %s shape %d local %.4f %.4f vis=%d poly=%d exact=%d\n", targetPath(d->parent)->s.c_str(), s->id, lx, ly, (int)d->visible,
+             (int)pointInPolys(shapeHitPolys(s), lx, ly), (int)hitShape(d, world, gx, gy, true));
+    }
+}
+void debugHit(DisplayObject* d, double x, double y) { double gx = x, gy = y; if (vm.root) vm.root->m.apply(gx, gy, gx, gy); hitDebugRec(d, worldMatrix(d), gx, gy); }
 bool hitTestPoint(DisplayObject* d, double gx, double gy, bool shapeFlag) {
     if (d->removed) return false;
     Mat w = worldMatrix(d);

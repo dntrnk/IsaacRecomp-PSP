@@ -142,11 +142,14 @@
     <p><b>IsaacRecomp</b>, one file per version (<code>isaac_og_save.sol</code> original,
     <code>isaac_save.sol</code> Wrath of the Lamb, <code>isaac_eternal_save.sol</code> Eternal Edition):</p>
     <ul>
-      <li>Windows: <code>%APPDATA%\IsaacRecomp\WrathOfTheLamb\</code></li>
-      <li>Linux: <code>~/.local/share/IsaacRecomp/WrathOfTheLamb/</code></li>
-      <li>Android: the <code>IsaacRecomp</code> folder in the internal storage</li>
-      <li>Nintendo Switch: <code>sd:/switch/isaac/</code></li>
+      <li>Windows and Linux: the <code>saves</code> folder next to the program (<code>IsaacRecomp.exe</code> /
+      <code>isaac</code>), beside the <code>tools</code> folder this page came in</li>
+      <li>Android: <code>IsaacRecomp/saves/</code> in the internal storage</li>
+      <li>Nintendo Switch: <code>sd:/switch/isaac/saves/</code></li>
     </ul>
+    <p class="fine" style="margin-bottom: 14px">Versions before 1.4.0 kept them elsewhere (before 1.3.1 on PC: <code>%APPDATA%\IsaacRecomp\WrathOfTheLamb\</code>
+    or <code>~/.local/share/IsaacRecomp/WrathOfTheLamb/</code>; on Android and Switch, directly in <code>IsaacRecomp/</code>
+    and <code>sd:/switch/isaac/</code>). The current version copies them into <code>saves</code> by itself.</p>
     <p><b>Flash game (Steam)</b>: <code>so.sol</code> lives in Flash Player's shared objects folder, usually
     <code>%APPDATA%\Macromedia\Flash Player\#SharedObjects\&lt;random name&gt;\localhost\so.sol</code>
     (search that folder for <code>so.sol</code> if it isn't there).</p>
