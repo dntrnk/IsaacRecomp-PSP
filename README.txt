@@ -213,6 +213,9 @@ CHANGES IN VERSION 14 (v1.4.0 public release numbering)
   the save converter comes in sd:/switch/isaac/tools/, as on PC. The saves in
   sd:/switch/isaac/ are copied there the first time (the old files are kept).
 - Android: the same, in IsaacRecomp/saves/ (copied from IsaacRecomp/ the first time).
+- The program has the same icon as the Switch and Android versions (Windows: the .exe and
+  its window; Linux: the window).
+- Save converter (tools/save_converter.html): shows the current save folders.
 - Sound: the game no longer waits for the sound mixer (smoother busy rooms, especially on
   Switch); the music is no longer the first sound cut when too many play at once; the
   chest and Satan sounds of the endings play at their original (lower) volume; Switch

@@ -646,6 +646,14 @@ int main(int argc, char** argv) {
     if (!(headless && norender)) {   // (logic tests need neither a window nor a GPU)
         win = SDL_CreateWindow("The Binding of Isaac", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, cfg.width, cfg.height, wflags);
         if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
+#if !defined(__SWITCH__) && !defined(__ANDROID__) && !defined(_WIN32)
+        {   // window / taskbar icon (Windows: from the .exe's resources, windows/isaac.ico)
+            static const unsigned char kIcon[64 * 64 * 4] = {
+#include "icon64.inc"
+            };
+            if (SDL_Surface* ic = SDL_CreateRGBSurfaceWithFormatFrom((void*)kIcon, 64, 64, 32, 64 * 4, SDL_PIXELFORMAT_RGBA32)) { SDL_SetWindowIcon(win, ic); SDL_FreeSurface(ic); }
+        }
+#endif
 #if !defined(__SWITCH__) && !defined(__ANDROID__)
         if (!headless) { SDL_PumpEvents(); fitWindow(win, cfg.width, cfg.height); }
 #endif

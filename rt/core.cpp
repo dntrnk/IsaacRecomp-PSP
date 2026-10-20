@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <functional>
 #include <chrono>
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)   // (Android: no backtrace() before API 33)
 #include <execinfo.h>
 #include <dlfcn.h>
 #endif
@@ -500,7 +500,7 @@ uint64_t g_rngCalls = 0;
 static void rngTrace(const char* what) {   // (testing) ISAAC_RNGTRACE: who asks for random numbers (addresses for addr2line)
     static int on = -1; if (on < 0) on = getenv("ISAAC_RNGTRACE") != nullptr;
     if (!on) return;
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     void* bt[8]; int n = backtrace(bt, 8);
     fprintf(stderr, "[rngcall] %llu %s", (unsigned long long)g_rngCalls, what);
     for (int i = 2; i < n; i++) { Dl_info di; if (dladdr(bt[i], &di) && di.dli_fbase) fprintf(stderr, " 0x%lx", (unsigned long)((char*)bt[i] - (char*)di.dli_fbase)); }

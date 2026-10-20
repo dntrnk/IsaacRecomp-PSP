@@ -492,3 +492,7 @@
 - Switch mixes at 48 kHz (the console's rate) like Android: no second resampling by SDL.
 - Opening a chest that gives a pedestal (or some other outcomes) pushes Isaac away in the original too:
   `xbew -= dx * (70 - d) / d * 0.4` (up to ~25 px/tick when touching it); identical to Ruffle in 22 runs.
+- Icon: windows/isaac.ico (16-256 px, from the Switch / Android artwork) as resource 1 in windows/isaac.rc (SDL uses the
+  first icon group for the window class); Linux: rt/icon64.inc (64x64 RGBA) with SDL_SetWindowIcon.
+- Android build: core.cpp's ISAAC_RNGTRACE backtrace is Linux-only (`!__ANDROID__`: bionic has no backtrace() before
+  API 33). Syntax check with an empty execinfo.h first in the include path to catch this on PC.
